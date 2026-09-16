@@ -50,6 +50,7 @@ and check what the device is doing.
 
 ```
 ttt ask    "<question>" [--path DIR]    agentic code intelligence
+ttt ask    --librarian "<question>"     answer from a tiibrarian corpus (loose)
 ttt code   "<prompt>"                   direct coding
 ttt image  "<prompt>" [--out F]         image generation
 ttt embed  "<text>" | --file F          local embeddings

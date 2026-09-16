@@ -192,6 +192,43 @@ Drives the device model through squackit's MCP tools against a directory.
 Invoked by `ttt ask`; usable directly. Honours `TIINY_ROUTE` to name a device
 model id (`default` = whatever is loaded).
 
+## `tiiny-librarian.py` — answer from a corpus (loose)
+
+Invoked by `ttt ask --librarian`; usable directly. Retrieves passages from a
+[tiibrarian](https://github.com/teaguesterling/tiibrarian) corpus and has the
+device answer from them, with locators like `somebook.pdf#p.27`.
+
+**This is a relaxed cordexa, and the relaxation is the whole caveat.** The full
+pipeline retrieves, synthesizes, then *grounds*: a claim survives only if it
+quotes a span verbatim from the page it cites, and the answer abstains when
+none survive. That check is deliberately not here. So the model can say things
+the passages do not support, and a citation tells you which page was
+**retrieved** — not that the sentence beside `[3]` is on page 3. Treat the
+answer as a lead and the locators as where to look.
+
+What is real is the retrieval: two-stage vector search over page embeddings,
+HNSW on a stored 256-d truncation then an exact re-rank on the full 1024-d
+vector. The query must be embedded by the same NPU encoder that built the
+index — the helper raises rather than falling back to the device's CPU
+embedder, whose vectors are close enough to look fine and retrieve worse.
+
+| | |
+|---|---|
+| `TIIBRARIAN_CORPUS` | the corpus `.duckdb` |
+| `TIIBRARIAN_HOME` | the checkout (default `~/Projects/tiibrarian`) |
+| `TIIBRARIAN_PY` | interpreter to use — see below |
+
+Needs the NPU embedder resident, and a chat model too unless `--raw`. `--raw`
+prints the retrieved passages and stops, so it pipes; the loose-mode caveat
+goes to stderr on both paths, never into stdout.
+
+It also needs an interpreter with `duckdb`, which `$PY` frequently is not —
+`$PY` only has to parse JSON, and on a host with no venv beside the script it
+is the system `python3`. `ttt` probes `TIIBRARIAN_PY`, then `$PY`, then
+`~/.local/share/venv/bin/python`, then `python3`, and takes the first that can
+import duckdb rather than failing inside the helper with a traceback that
+blames tiibrarian.
+
 ## `tiiny-duckeye.py` — the device writes a duckeye command
 
 Invoked by `ttt duckeye`; usable directly. Turns a plain-English request into

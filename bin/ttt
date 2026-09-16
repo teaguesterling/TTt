@@ -9,6 +9,8 @@
 #
 #   ttt ask  "<question>" | FILE | -  [--path DIR] [--smart]   agentic code-intelligence
 #                                                     (device drives squackit's MCP tools)
+#            --librarian [--topk N] [--raw]           answer from a tiibrarian corpus instead
+#                                                     (LOOSE: real retrieval, claims unchecked)
 #   ttt do   "<intent>"   [--path DIR]              sandboxed file task via lackpy
 #                                                     (fast; phrase as "return X")
 #   ttt code "<prompt>"   [--smart]                 direct coding via woollama
@@ -288,15 +290,40 @@ is_thinking() { case "$1" in *Thinking*|*35B*|*35b*) return 0;; *) return 1;; es
 # binary. Call sites must also treat a failure as non-fatal and fall through to
 # the API path — `exec` made that impossible, which turned "prefer the CLI" into
 # "require the CLI".
-#
-# The /dev/tty probe runs in a subshell with the subshell's OWN stderr closed:
-# bash reports a failed redirection itself, on this line, BEFORE the 2>/dev/null
-# on the inner command can apply — so the naive spelling prints
+# The /dev/tty probe is wrapped in a subshell with the subshell's OWN stderr
+# closed: bash reports a failed redirection itself, on this line, BEFORE the
+# `2>/dev/null` on the inner command can apply — so the naive spelling prints
 #   ttt: line NNN: /dev/tty: No such device or address
-# on every non-interactive load/unload, which is the noise this removes.
+# on every non-interactive load/unload, which is precisely the confusing noise
+# this function exists to remove.
 have_vendor_cli() {
   command -v tiiny >/dev/null 2>&1 || return 1
   ( exec 2>/dev/null; : >/dev/tty ) || return 1
+}
+
+# `ttt ask --librarian` reads a DuckDB corpus, so it needs an interpreter with
+# duckdb — which $PY often is not: $PY only has to parse JSON, and on a host
+# with no venv beside the script it is the system python3. Probe for one that
+# can actually import duckdb rather than failing inside the helper with a
+# traceback that blames tiibrarian.
+# An explicit TIIBRARIAN_PY is honoured or REFUSED — never quietly swapped for
+# a different interpreter that happens to work. Naming one means wanting that
+# one (a particular duckdb build, a particular extension set), and silently
+# using another is the same failure as second-guessing any other explicit
+# override. Only the unset case probes. Exit 2 says "yours cannot", 1 says
+# "none found", so the caller can tell you which.
+librarian_py() {
+  local c
+  if [ -n "${TIIBRARIAN_PY:-}" ]; then
+    "$TIIBRARIAN_PY" -c 'import duckdb' >/dev/null 2>&1 || return 2
+    printf '%s' "$TIIBRARIAN_PY"; return 0
+  fi
+  for c in "$PY" "$HOME/.local/share/venv/bin/python" python3; do
+    [ -n "$c" ] || continue
+    command -v "$c" >/dev/null 2>&1 || [ -x "$c" ] || continue
+    if "$c" -c 'import duckdb' >/dev/null 2>&1; then printf '%s' "$c"; return 0; fi
+  done
+  return 1
 }
 
 # ensure a specific model is the resident chat model (stopping other chat models;
@@ -318,16 +345,25 @@ ensure_loaded() {
   return 1
 }
 
-usage() { sed -n '2,60p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,62p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 [ $# -eq 0 ] && usage 1
 cmd="$1"; shift
 
 # collect optional flags
 PATH_ARG="$PWD"; SMART=0; TRANSPARENT=0; OUT_ARG=""; PX_ARG=""; FILE_ARG=""; ALL=0; ENGINE_ARG=""; MODEL_ARG=""; STAMPS=0; ARGS=()
 ERRORS=0; N_ARG=""; POST_ARG=""; SESSION_ARG=""; VOICE_ARG=""; LANG_ARG=""; PLAY=0; SECS_ARG=""; DIALOG=0; TEXT_ARG=""; TEMPLATE_ARG=""; FULL=0; DRYRUN=0; ANSWER=0; ALLOWWHERE=0
+LIBRARIAN=0; TOPK_ARG=""; RAW=0; CHARS_ARG=""; CORPUS_ARG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --dialog) DIALOG=1; shift;;
+    --librarian) LIBRARIAN=1; shift;;
+    --topk) TOPK_ARG="$2"; shift 2;;
+    --topk=*) TOPK_ARG="${1#*=}"; shift;;
+    --raw) RAW=1; shift;;
+    --chars) CHARS_ARG="$2"; shift 2;;
+    --chars=*) CHARS_ARG="${1#*=}"; shift;;
+    --corpus) CORPUS_ARG="$2"; shift 2;;
+    --corpus=*) CORPUS_ARG="${1#*=}"; shift;;
     --dry-run) DRYRUN=1; shift;;
     --answer) ANSWER=1; shift;;
     --allow-where) ALLOWWHERE=1; shift;;
@@ -377,8 +413,31 @@ fi
 
 case "$cmd" in
   ask)
-    ASK_Q="$(payload_text 'ttt ask "<question>" | FILE | -   [--path DIR] [--smart]')"
+    ASK_Q="$(payload_text 'ttt ask "<question>" | FILE | -   [--path DIR] [--smart] [--librarian]')"
     ARGS=("$ASK_Q")
+    # --librarian answers from a tiibrarian corpus instead of from code. LOOSE:
+    # the retrieval is exact (NPU embeddings, two-stage vector search) but the
+    # answer is not grounded — the citations say which pages were retrieved, not
+    # that the sentence beside [3] is on page 3. The grounded path is cordexa's.
+    if [ "$LIBRARIAN" = 1 ]; then
+      LPY="$(librarian_py)" || {
+        case $? in
+          2) echo "ttt ask --librarian: TIIBRARIAN_PY=$TIIBRARIAN_PY cannot import duckdb" >&2;;
+          *) echo "ttt ask --librarian: no python with duckdb — set TIIBRARIAN_PY" >&2;;
+        esac
+        exit 1; }
+      # Reachable knobs. A flag ttt does not know falls through to the
+      # positionals and becomes the QUESTION, which then fails inside the helper
+      # with an argparse error that looks like the helper's fault — so the ones
+      # worth reaching for are wired here rather than left to that trap.
+      LARGS=()
+      if [ -n "$TOPK_ARG" ]; then LARGS+=(--topk "$TOPK_ARG"); fi
+      if [ -n "$CHARS_ARG" ]; then LARGS+=(--chars "$CHARS_ARG"); fi
+      if [ -n "$CORPUS_ARG" ]; then LARGS+=(--corpus "$CORPUS_ARG"); fi
+      if [ "$RAW" = 1 ]; then LARGS+=(--raw); fi
+      TIINY_ROUTE="$(loaded_model)" TIINY_IP="$IP" TIINY_AUTH_KEY="$KEY" \
+        exec "$LPY" "$HERE/tiiny-librarian.py" "$ASK_Q" "${LARGS[@]}"
+    fi
     ROUTE="default"; [ "$SMART" = 1 ] && ROUTE="tiiny/Qwen3-Thinking"  # informational; device serves loaded model
     TIINY_ROUTE="$ROUTE" "$PY" "$HERE/tiiny-ask.py" "${ARGS[0]}" --path "$PATH_ARG"
     ;;
