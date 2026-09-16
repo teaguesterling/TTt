@@ -1,0 +1,33 @@
+[Unit]
+Description=Tiiny NPU inference watchdog (detects and recovers a wedged model server)
+Documentation=https://github.com/  # replace with your internal doc link
+After=network-online.target
+Wants=network-online.target
+# If the watchdog itself keeps dying, back off rather than hammering.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# Adjust to the user that can reach the management API on this device.
+User=tiiny
+# Secrets and endpoints live here (chmod 600). The leading '-' makes it optional.
+EnvironmentFile=-/etc/tiiny-embedder-watchdog.env
+ExecStart=/usr/local/bin/tiiny-embedder-watchdog.sh
+Restart=always
+RestartSec=15
+# Log straight to the journal: journalctl -u tiiny-embedder-watchdog -f
+StandardOutput=journal
+StandardError=journal
+
+# Modest hardening — the watchdog only needs network + its env file.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

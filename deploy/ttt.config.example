@@ -1,0 +1,21 @@
+# ttt config — plain KEY=VALUE (NOT shell; no command substitution or exec).
+# Copy to ~/.config/ttt/config (or point $TTT_CONFIG at it).
+#
+# Precedence:  --flag  >  environment variable  >  this file  >  built-in default.
+# '#' lines are ignored; whitespace around '=' is trimmed; surrounding quotes on
+# the value are stripped. A key already set in the environment is left untouched
+# (so an exported env var or a CLI flag always wins over the file).
+
+# --- ocr: image -> text -------------------------------------------------------
+# engine: 'tiiny'  = a vision model ON THE DEVICE (default; more accurate, but it
+#                    is a chat model, so it evicts the resident chat model);
+#         'rapidocr' = host CPU (RapidOCR/ONNX): ~1s, free, no device, no eviction.
+#TTT_OCR_ENGINE=tiiny
+
+# device model for engine=tiiny. Must be an Image-Text-to-Text model whose vision
+# is actually ENABLED on-device. Confirmed working 2026-08-27:
+#   Qwen/Qwen3.6-35B-A3B-turbo   (MoE, 3B active — fast; the built-in default)
+# Also Image-Text-to-Text but UNVERIFIED here: Qwen3.6-27B, Qwen3.5/3.6-35B-A3B.
+# AVOID google/gemma-4-26B-A4B-it — it is the smallest (12.5 GiB), but it does
+# not serve images here. Test any model you pick before relying on it.
+#TTT_OCR_MODEL=Qwen/Qwen3.6-35B-A3B-turbo

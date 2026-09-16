@@ -1,0 +1,20 @@
+[Unit]
+Description=woollama router (woollamad) — fronts the Tiiny device on :47600
+Documentation=https://github.com/teaguesterling/TTt/blob/main/docs/architecture.md
+After=network-online.target tiiny-pcsvr.service
+Wants=network-online.target
+# pcsvr owns auth_data/, which the wrapper reads the device key from
+After=tiiny-pcsvr.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+Environment=WOOLLAMA_ADDRESS=127.0.0.1:47600
+ExecStart=%h/tiiny-tools/bin/woollamad-run.sh
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target

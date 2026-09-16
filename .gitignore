@@ -1,0 +1,18 @@
+# --- Never commit: device credentials -------------------------------------
+# The bearer token, and anything derived from pcsvr's auth_data.
+auth_data/
+*auth_key*
+*.token
+
+# --- Runtime state written by the tools themselves -------------------------
+*.log
+*.pid
+wifi-trace*.csv
+
+# --- Capture / diagnostic bundles ------------------------------------------
+tiiny-import-diag-*/
+*-capture-*/
+
+# --- Python bytecode --------------------------------------------------------
+__pycache__/
+*.pyc

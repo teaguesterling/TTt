@@ -1,0 +1,20 @@
+[Unit]
+Description=Watch the Tiiny device, the bridge path to it, and tell the two apart
+Documentation=https://github.com/teaguesterling/TTt/blob/main/docs/troubleshooting.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+# TIINY_IP pins the probe to the device's own USB /30 address. Without it the
+# script would fall back to discovery, and on this host api.tiiny resolves to
+# the bridge host itself -- probing that would report the device up whenever
+# Caddy is up, which defeats the DEVICE-vs-PATH split the watcher exists to
+# provide.
+Environment=TIINY_IP=172.20.19.89
+ExecStart=%h/tiiny-tools/bin/device-watch.sh
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target

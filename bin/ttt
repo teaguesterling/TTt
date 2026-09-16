@@ -1,0 +1,1370 @@
+#!/usr/bin/env bash
+# ttt — a companion CLI backed by the (free, local) Tiiny Pocket device.
+# One entry point for the three modes validated in TIINY-LACKPY-EVAL.md, so
+# real work can be offloaded to the device instead of my own context/tokens.
+#
+# Every command takes its payload the same way: a bare argument ("text" for the
+# text commands, a path for the file ones), "-" for stdin, or --text/--file to
+# say it explicitly. With no argument, a piped stdin is read anyway.
+#
+#   ttt ask  "<question>" | FILE | -  [--path DIR] [--smart]   agentic code-intelligence
+#                                                     (device drives squackit's MCP tools)
+#   ttt do   "<intent>"   [--path DIR]              sandboxed file task via lackpy
+#                                                     (fast; phrase as "return X")
+#   ttt code "<prompt>"   [--smart]                 direct coding via woollama
+#                                                     (generous token budget)
+#   ttt review <file>     [--smart]                 first-pass code review of a file
+#                                                     (real defects only; cites line #s)
+#   ttt judge <rubric> <candidate> [--smart]        grade candidate vs rubric items
+#                                                     (device as judge — free/offload)
+#   ttt image "<prompt>" [--transparent] [--px N] [--out F]  text-to-image (Z-Image-Turbo)
+#                                                     (--transparent = chroma-key; --px = NxN pixel sprite)
+#   ttt embed "<text>" ["<t2>" …] | --file F        local text embedding(s) -> 1024-dim
+#                                                     (1 arg: vector; batch: JSONL, one per line)
+#   ttt ocr   <image> [--engine tiiny|rapidocr] [--model ID] [--out F]  image -> text
+#                                                     (tiiny=device VLM, default; rapidocr=host CPU; config sets defaults)
+#   ttt asr   <audio> [--model ID] [--out F]        speech -> text (~6x real time)
+#                                                     (any ffmpeg-readable audio/video; 7% NPU, does NOT evict chat)
+#   ttt load <alias|ID>                             load a model (aliases from ~/.config/ttt/models)
+#   ttt unload [<alias|ID>|--all]                   free NPU again
+#   ttt say   "<text>" [--voice F1] [--play] [--out F]   text -> speech on the device
+#                                                     (reads stdin when given no argument)
+#   ttt listen [--seconds N] [--out F]              microphone -> text (records, then ASR)
+#   ttt rerank "<query>" <candidate> …              order candidates by relevance
+#                                                     (prompted; there is no rerank endpoint)
+#   ttt prompt ["<text>"] [--template FILE]         ask the device; text in, text out
+#                                                     (reads stdin when given no argument, so it pipes)
+#   ttt dialog ["<text>"] [--template FILE]         same, wrapped in a zenity entry + answer window
+#                                                     (or: ttt prompt --dialog)
+#   ttt models [--all]                              models loaded (--all = installed)
+#   ttt status                                      device + woollama health
+#   ttt unlock                                      unlock /data after a reboot
+#                                                     (the device boots locked; until then everything 502s)
+#   ttt logs ["<text>"] [--errors] [-n N]           the device's OWN service log
+#                                                     (the real error behind a bare 502/500)
+#   ttt doctor                                      one-shot check of the whole path
+#   ttt top                                         NPU utilisation + what's loaded
+#   ttt api <PATH> [--post JSON]                    authenticated call to the model API
+#
+#   --smart  : use the Thinking/35B route (slower, for hard problems).
+#              Needs a reasoning model loaded — run `ttt load smart` first.
+#              Default is 30B-Instruct, thinking off — fast and honors thinking-off.
+#
+# Notes baked in from evaluation: keep the device on 30B-Instruct for interactive
+# use; never reboot to swap (use :8800 start/stop); reasoning routes need a big
+# token budget (handled below).
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Interpreter: prefer a venv beside the script (the workstation's layout, where
+# lackpy and squackit live), else fall back to system python3. The device commands only need
+# python3 for JSON; `ttt do` / `ttt ask` additionally need lackpy/squackit and
+# will say so if they're absent.
+if [ -x "$HERE/.venv/bin/python" ]; then
+  PY="$HERE/.venv/bin/python"
+elif [ -x "$HERE/../.venv/bin/python" ]; then
+  PY="$HERE/../.venv/bin/python"
+else
+  PY="$(command -v python3)"
+fi
+# Optional config: ~/.config/ttt/config — plain KEY=VALUE lines (no shell exec),
+# defining per-operation defaults like TTT_OCR_ENGINE / TTT_OCR_MODEL. A value
+# already present in the environment WINS (so an exported env var or a --flag
+# overrides the file); the file only fills what's unset. Precedence overall:
+#   --flag  >  env var  >  config file  >  built-in default.
+TTT_CONFIG="${TTT_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/ttt/config}"
+if [ -f "$TTT_CONFIG" ]; then
+  while IFS='=' read -r _k _v; do
+    _k="${_k%%[[:space:]]*}"; _k="${_k##[[:space:]]}"
+    case "$_k" in ''|'#'*) continue;; esac
+    [ -n "${!_k:-}" ] && continue                     # env already set -> it wins
+    _v="${_v#"${_v%%[![:space:]]*}"}"; _v="${_v%"${_v##*[![:space:]]}"}"  # trim
+    _v="${_v#\"}"; _v="${_v%\"}"                       # strip surrounding quotes
+    export "$_k=$_v"
+  done < "$TTT_CONFIG"
+fi
+LACKPY="$HERE/.venv/bin/lackpy"
+[ -x "$LACKPY" ] || LACKPY="$(command -v lackpy 2>/dev/null || echo "$LACKPY")"
+WOOLLAMA="http://127.0.0.1:47600/v1/chat/completions"
+# --- device endpoints -------------------------------------------------------
+# *.tiiny is REAL DNS now: the bridge host's dnsmasq answers address=/tiiny/<bridge host>,
+# and the bridge host's Caddy proxies to the device over the USB /30. So the default is a
+# NAME, not an address — it survives the device's IP changing under DHCP and
+# its roam-unstable radio, and it works from any host on the LAN.
+#
+#   TIINY_IP   set it to talk to the device directly (off-LAN, the bridge host down, or
+#              debugging the bridge itself). Everything below follows.
+#   HOST       :80 surface (OpenAI + the vhosts)
+#   MGMT       management API — reached as p8800.api.tiiny on :80, NOT :8800.
+#              The device's own nginx maps that vhost to its internal 8800, so
+#              it rides the bridge; a literal :8800 does not.
+if [ -n "${TIINY_IP:-}" ]; then
+  HOST="$TIINY_IP"; MGMT="http://$TIINY_IP:8800/api/v1"
+else
+  HOST="${TIINY_HOST:-api.tiiny}"; MGMT="${TIINY_MGMT:-http://p8800.api.tiiny/api/v1}"
+fi
+IP="$HOST"   # back-compat: existing call sites interpolate $IP
+
+# --- bearer token -----------------------------------------------------------
+# TIINY_AUTH_KEY first so this runs on hosts with no pcsvr; the pcsvr auth_data
+# directory exists only on the host where pcsvr runs, and is the fallback, not
+# the requirement.
+KEY="${TIINY_AUTH_KEY:-$("$PY" -c "import json,glob,os
+m=glob.glob(os.path.expanduser('~/.local/share/tiiny-pcsvr/auth_data/*.json'))
+print(json.load(open(m[0]))['auth_key'] if m else '')" 2>/dev/null)}"
+if [ -z "$KEY" ]; then
+  # local-only commands (ocr) and help don't touch the device — don't demand a token.
+  case "${1:-}" in
+    ocr|-h|--help|help) : ;;
+    *)
+      echo "ttt: no device token. Set TIINY_AUTH_KEY, or run where pcsvr keeps" >&2
+      echo "       ~/.local/share/tiiny-pcsvr/auth_data/<serial>.json (the pcsvr host)." >&2
+      exit 1;;
+  esac
+fi
+
+# The resident CHAT model (empty if none, or if the device is unreachable).
+# /v1/models reports supports_chat, and it matters: this device happily holds a
+# TTS or ASR model alongside everything else, and handing one of those to a
+# chat route earns a 503 that reads like the device being broken.
+loaded_model() {
+  curl -s -m 8 "http://$IP/v1/models" -H "Authorization: Bearer $KEY" 2>/dev/null | "$PY" -c "
+import json,sys
+try: d=json.load(sys.stdin)
+except Exception: print(''); raise SystemExit
+items=d.get('data',[])
+chat=[m['id'] for m in items if m.get('supports_chat')]
+if not chat:                      # no flag (older firmware): exclude the obvious non-chat types
+    skip=('text embedding','text-to-speech','asr','text reranking','music generation')
+    chat=[m['id'] for m in items
+          if 'mbed' not in m['id'] and not (m.get('type') or '').lower().startswith(skip)]
+print(chat[0] if chat else '')"
+}
+# --- /data lock state --------------------------------------------------------
+# The device boots with /data (LUKS2, detached header) LOCKED: docker.service
+# won't start and every model call answers 502, with no cue anywhere that
+# unlocking is what's needed. /api/v1/connect reports the state and needs no
+# token, so this answers even when the bearer key is missing or rejected.
+auth_base() {
+  if [ -n "${TIINY_IP:-}" ]; then printf 'http://%s/api/v1' "$TIINY_IP"
+  else printf 'http://%s/api/v1' "${TIINY_AUTH_HOST:-auth.api.tiiny}"; fi
+}
+device_state() {
+  local hdr=()
+  if [ -n "${TIINY_IP:-}" ]; then hdr=(-H "Host: ${TIINY_AUTH_HOST:-auth.api.tiiny}"); fi
+  curl -s -m 8 "${hdr[@]}" -X POST -H 'Content-Type: application/json' \
+    -d '{"auth_key":""}' "$(auth_base)/connect" 2>/dev/null | "$PY" -c "
+import json,sys
+try: print(json.load(sys.stdin).get('data_state','?'))
+except Exception: print('?')" 2>/dev/null || printf '?'
+}
+# Explain a 502 rather than printing the number. Locked /data is the usual
+# cause, and the device gives no other hint.
+lock_hint() {
+  local s; s="$(device_state)"
+  case "$s" in
+    unlocked)
+      echo "ttt: device returned HTTP 502 while /data reports unlocked — the backend may still be starting." >&2;;
+    '?'|'')
+      echo "ttt: device returned HTTP 502 and would not report its lock state — check 'ttt status'." >&2;;
+    *)
+      echo "ttt: the device booted with /data locked (data_state: $s). Nothing works until it is unlocked." >&2
+      echo "       run:  ttt unlock" >&2;;
+  esac
+}
+
+# Model aliases: ~/.config/ttt/models, one `alias = model id` per line, with
+# the built-ins below as the fallback. Anything unrecognised is passed through
+# untouched, so a full model id always works.
+MODELS_CONF="${TTT_MODELS:-${XDG_CONFIG_HOME:-$HOME/.config}/ttt/models}"
+resolve_model() {
+  local a="$1" hit=""
+  if [ -f "$MODELS_CONF" ]; then
+    hit="$(sed -n "s/^[[:space:]]*${a}[[:space:]]*=[[:space:]]*//p" "$MODELS_CONF" | head -1)"
+    hit="${hit%%#*}"; hit="${hit%"${hit##*[![:space:]]}"}"
+  fi
+  if [ -n "$hit" ]; then printf '%s' "$hit"; return; fi
+  case "$a" in
+    fast|instruct)  printf 'Qwen/Qwen3-30B-A3B-Instruct';;
+    smart|thinking) printf 'Qwen/Qwen3-30B-A3B-Thinking';;
+    35b)            printf 'Qwen/Qwen3.6-35B-A3B';;
+    small)          printf 'Qwen/Qwen3-8B';;
+    coder)          printf 'Qwen/Qwen3-Coder-30B-A3B-Instruct';;
+    tts|voice)      printf 'Supertone/supertonic-3';;
+    asr|speech)     printf 'Qwen/Qwen3-ASR-1.7B';;
+    embed)          printf 'Qwen/Qwen3-Embedding-0.6B';;
+    *)              printf '%s' "$a";;
+  esac
+}
+
+# Load a NON-chat model (TTS, ASR) without evicting the resident chat model:
+# these cost a few percent of the NPU and sit alongside everything else. The
+# service behind them 503s until its model is actually resident.
+#
+# Check the `running` LIST, not the whole response: a model that is merely
+# `pending`, or named inside `instances`, matches a naive grep — and then the
+# service 503s a second later because it isn't actually up yet.
+is_running() {
+  curl -s -m 10 "${MGMT}/models/running" -H "Authorization: Bearer $KEY" 2>/dev/null | "$PY" -c "
+import json,sys
+try: run=json.load(sys.stdin).get('running') or []
+except Exception: sys.exit(1)
+sys.exit(0 if sys.argv[1] in run else 1)" "$1" 2>/dev/null
+}
+ensure_service_model() {
+  local want="$1" i
+  if is_running "$want"; then return 0; fi
+  echo "loading $want on the device (does not evict the chat model)…" >&2
+  curl -s -m 180 -X POST "${MGMT}/models/$(printf '%s' "$want" | sed 's#/#%2F#g')/start" \
+    -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -d '{}' >/dev/null 2>&1
+  for i in $(seq 1 36); do
+    sleep 5
+    if is_running "$want"; then return 0; fi
+  done
+  return 1
+}
+
+# --- where the payload comes from -------------------------------------------
+# One rule for every command, so these compose like any other Unix tool:
+#
+#   ttt say "hello"        a bare argument is the payload — text for the text
+#   ttt ocr shot.png       commands, a path for the file commands
+#   ttt say -              "-" is stdin, for both kinds
+#   … | ttt say            no argument at all and stdin isn't a terminal: read it
+#   ttt say --text=hello   the explicit spellings
+#   ttt say --file note.txt
+#
+# A terminal with nothing supplied prints usage rather than hanging on a read.
+# (For `embed` and `rerank` the payload is a list, so their --file is one item
+# per line — the same rule, applied to a list-shaped payload.)
+payload_text() {                        # payload_text "<usage line>" -> text on stdout
+  local usage="$1"
+  if [ -n "${TEXT_ARG:-}" ]; then printf '%s' "$TEXT_ARG"; return 0; fi
+  if [ -n "${FILE_ARG:-}" ]; then
+    if [ "$FILE_ARG" = "-" ]; then cat; return 0; fi
+    [ -f "$FILE_ARG" ] || { echo "ttt $cmd: no such file: $FILE_ARG" >&2; exit 1; }
+    cat "$FILE_ARG"; return 0
+  fi
+  if [ "${ARGS[0]:-}" = "-" ]; then cat; return 0; fi
+  if [ -n "${ARGS[0]:-}" ]; then printf '%s' "${ARGS[0]}"; return 0; fi
+  # Not a terminal: read it — but an EMPTY stdin is "nothing supplied", not an
+  # empty payload. `ttt say < /dev/null` should print usage, not speak silence.
+  if [ ! -t 0 ]; then
+    local piped; piped="$(cat)"
+    if [ -n "${piped//[[:space:]]/}" ]; then printf '%s' "$piped"; return 0; fi
+  fi
+  echo "usage: $usage" >&2; exit 1
+}
+payload_file() {                        # payload_file "<usage line>" -> a path on stdout
+  local usage="$1" src="" tmp
+  if   [ -n "${FILE_ARG:-}" ]; then src="$FILE_ARG"
+  elif [ -n "${ARGS[0]:-}" ];  then src="${ARGS[0]}"
+  elif [ ! -t 0 ];             then src="-"
+  else echo "usage: $usage" >&2; exit 1; fi
+  if [ "$src" = "-" ]; then             # spool stdin so ocr/asr work in a pipe
+    tmp="$(mktemp -t ttt-stdin-XXXXXX)"; cat > "$tmp"
+    # An empty spool means nothing was supplied (`ttt review < /dev/null`), not
+    # an empty file to review. Say so instead of processing nothing.
+    if [ ! -s "$tmp" ]; then rm -f "$tmp"; echo "usage: $usage" >&2; exit 1; fi
+    printf '%s' "$tmp"; return 0
+  fi
+  [ -f "$src" ] || { echo "ttt $cmd: not a file: $src" >&2; exit 1; }
+  printf '%s' "$src"
+}
+
+# does a model id reason? (Thinking route, or the 35B which always reasons)
+is_thinking() { case "$1" in *Thinking*|*35B*|*35b*) return 0;; *) return 1;; esac; }
+
+# ensure a specific model is the resident chat model (stopping other chat models;
+# the device serves one chat model at a time). Returns non-zero if it never loads.
+ensure_loaded() {
+  local want="$1" running m i
+  [ "$(loaded_model)" = "$want" ] && return 0
+  running=$(curl -s -m 10 "${MGMT}/models/running" -H "Authorization: Bearer $KEY" \
+    | "$PY" -c "import json,sys;print(' '.join(x for x in json.load(sys.stdin).get('running',[]) if 'mbed' not in x and '/' in x))" 2>/dev/null || true)
+  for m in $running; do
+    [ "$m" = "$want" ] && continue
+    curl -s -m 60 -X POST "${MGMT}/models/$m/stop" -H "Authorization: Bearer $KEY" >/dev/null
+  done
+  curl -s -m 120 -X POST "${MGMT}/models/$want/start" -H "Authorization: Bearer $KEY" >/dev/null
+  for i in $(seq 1 40); do
+    [ "$(loaded_model)" = "$want" ] && return 0
+    sleep 3
+  done
+  return 1
+}
+
+usage() { sed -n '2,55p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+[ $# -eq 0 ] && usage 1
+cmd="$1"; shift
+
+# collect optional flags
+PATH_ARG="$PWD"; SMART=0; TRANSPARENT=0; OUT_ARG=""; PX_ARG=""; FILE_ARG=""; ALL=0; ENGINE_ARG=""; MODEL_ARG=""; STAMPS=0; ARGS=()
+ERRORS=0; N_ARG=""; POST_ARG=""; SESSION_ARG=""; VOICE_ARG=""; LANG_ARG=""; PLAY=0; SECS_ARG=""; DIALOG=0; TEXT_ARG=""; TEMPLATE_ARG=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dialog) DIALOG=1; shift;;
+    --text) TEXT_ARG="$2"; shift 2;;
+    --text=*) TEXT_ARG="${1#*=}"; shift;;
+    --file=*) FILE_ARG="${1#*=}"; shift;;
+    --template) TEMPLATE_ARG="$2"; shift 2;;
+    --template=*) TEMPLATE_ARG="${1#*=}"; shift;;
+    --voice) VOICE_ARG="$2"; shift 2;;
+    --lang|--language) LANG_ARG="$2"; shift 2;;
+    --play) PLAY=1; shift;;
+    --seconds|-s) SECS_ARG="$2"; shift 2;;
+    --errors) ERRORS=1; shift;;
+    -n|--lines) N_ARG="$2"; shift 2;;
+    --post) POST_ARG="$2"; shift 2;;
+    --session) SESSION_ARG="$2"; shift 2;;
+    --path) PATH_ARG="$2"; shift 2;;
+    --smart) SMART=1; shift;;
+    --transparent) TRANSPARENT=1; shift;;
+    --out) OUT_ARG="$2"; shift 2;;
+    --px) PX_ARG="$2"; shift 2;;
+    --file) FILE_ARG="$2"; shift 2;;
+    --all|--available) ALL=1; shift;;
+    --timestamps) STAMPS=1; shift;;
+    --engine) ENGINE_ARG="$2"; shift 2;;
+    --model) MODEL_ARG="$2"; shift 2;;
+    *) ARGS+=("$1"); shift;;
+  esac
+done
+
+# --smart only means something if a reasoning model is actually loaded on the
+# device. (The device holds several models at once, bounded by NPU RAM, but the
+# chat route uses whichever chat model is resident.) Warn instead of silently
+# no-op'ing on an Instruct model.
+if [ "$SMART" = 1 ]; then
+  case "$cmd" in
+    ask|code|review)
+      LM="$(loaded_model)"
+      if [ -n "$LM" ] && ! is_thinking "$LM"; then
+        echo "note: --smart wants reasoning, but the device has '$LM' loaded (Instruct)." >&2
+        echo "      run 'ttt load smart' first for real reasoning; proceeding on the loaded model." >&2
+      fi
+      ;;
+  esac
+fi
+
+case "$cmd" in
+  ask)
+    ASK_Q="$(payload_text 'ttt ask "<question>" | FILE | -   [--path DIR] [--smart]')"
+    ARGS=("$ASK_Q")
+    ROUTE="default"; [ "$SMART" = 1 ] && ROUTE="tiiny/Qwen3-Thinking"  # informational; device serves loaded model
+    TIINY_ROUTE="$ROUTE" "$PY" "$HERE/tiiny-ask.py" "${ARGS[0]}" --path "$PATH_ARG"
+    ;;
+
+  do)
+    DO_INTENT="$(payload_text 'ttt do "<intent>" | FILE | -   [--path DIR]')"
+    ARGS=("$DO_INTENT")
+    # lackpy: sandboxed restricted-Python; returns the last EXPRESSION value.
+    out=$("$LACKPY" --workspace "$PATH_ARG" -c "${ARGS[0]}" --profile read_file,find_files 2>/dev/null || true)
+    # pretty-print the {success, output} envelope if it's JSON, else raw
+    "$PY" - "$out" <<'PYEOF'
+import json,sys
+raw=sys.argv[1] if len(sys.argv)>1 else ""
+try:
+    d=json.loads(raw)
+    ok=d.get("success"); print(("✓ " if ok else "✗ ")+json.dumps(d.get("output")))
+    if not ok and d.get("error"): print("  "+str(d["error"])[:200],file=sys.stderr)
+except Exception:
+    print(raw)
+PYEOF
+    ;;
+
+  code)
+    CODE_PROMPT="$(payload_text 'ttt code "<prompt>" | FILE | -   [--smart]')"
+    ARGS=("$CODE_PROMPT")
+    ROUTE="tiiny-fast/default"; MAXTOK=4096
+    [ "$SMART" = 1 ] && { ROUTE="tiiny/default"; MAXTOK=16384; }
+    PROMPT="${ARGS[0]}" ROUTE="$ROUTE" MAXTOK="$MAXTOK" "$PY" - <<'PYEOF'
+import json,os,sys,urllib.request
+prompt=os.environ["PROMPT"]
+mt=max(2048, min(int(os.environ["MAXTOK"]), 31000-len(prompt)//4))  # fit 32K context
+# stream so the device's 120s idle-timeout can't fire on long generations (below)
+body={"model":os.environ["ROUTE"],"stream":True,"max_tokens":mt,
+      "messages":[{"role":"user","content":prompt}]}
+r=urllib.request.Request("http://127.0.0.1:47600/v1/chat/completions",method="POST",
+    headers={"Authorization":"Bearer local","Content-Type":"application/json"},
+    data=json.dumps(body).encode())
+parts=[]; finish=None
+try:
+    with urllib.request.urlopen(r,timeout=600) as resp:
+        for raw in resp:
+            line=raw.decode("utf-8","replace").strip()
+            if not line.startswith("data:"): continue
+            data=line[5:].strip()
+            if data=="[DONE]": break
+            try: ch=json.loads(data)["choices"][0]
+            except Exception: continue
+            piece=(ch.get("delta") or {}).get("content")
+            if piece: parts.append(piece); sys.stdout.write(piece); sys.stdout.flush()
+            if ch.get("finish_reason"): finish=ch["finish_reason"]
+except Exception as e:
+    if not parts:
+        raise SystemExit(f"ttt code: device error ({type(e).__name__}: {e}); retry (first call after a model swap can 500)")
+    sys.stderr.write(f"\n[stream ended early: {type(e).__name__}]\n")
+print()
+if finish=="length": print("[ttt: truncated — retry with a shorter task]")
+PYEOF
+    ;;
+
+  review)
+    F="$(payload_file 'ttt review FILE | -   [--smart]')"
+    ROUTE="tiiny-fast/default"; MAXTOK=2048
+    # --smart review is unreliable on this device: too small a budget truncates
+    # (thinking eats it), too large and the Thinking model reasons until the
+    # gateway times out (500/504). 8192 is the least-bad middle — completes on
+    # small files, degrades on large ones. Fast is the reliable default.
+    [ "$SMART" = 1 ] && { ROUTE="tiiny/default"; MAXTOK=8192; }
+    echo "reviewing $(basename "$F") on ${ROUTE##*/} route… (streaming live; --smart can take a few min)" >&2
+    FILE="$F" ROUTE="$ROUTE" MAXTOK="$MAXTOK" "$PY" - <<'PYEOF'
+import json,os,sys,urllib.request
+path=os.environ["FILE"]
+src=open(path,encoding="utf-8",errors="replace").read().splitlines()
+MAXLINES=800; truncated=len(src)>MAXLINES
+numbered="\n".join(f"{i+1:4d}  {ln}" for i,ln in enumerate(src[:MAXLINES]))
+# Calibrated prompt: a small local model over-flags subtle systems/protocol code
+# with false confidence (empirically: invented a SO_BINDTODEVICE bug, inverted a
+# timeout, mis-stated the exception hierarchy). Force it to distinguish confirmed
+# from speculative and to state the assumption each finding rests on.
+sysmsg=("You are a careful reviewer giving a FIRST-PASS review. Look for real "
+  "defects: correctness bugs, unhandled edge cases, resource leaks, races, "
+  "security issues. Cite the line number for each.\n"
+  "CALIBRATE CONFIDENCE — this matters more than finding a lot:\n"
+  "- Mark a finding [confirmed] ONLY if it is certainly wrong from the code alone.\n"
+  "- Otherwise mark it [verify] and state the exact assumption it depends on "
+  "(platform, protocol, or caller behavior you cannot see).\n"
+  "- Do NOT invent problems to seem thorough. If you are unsure whether some "
+  "OS/protocol/library behavior is actually a bug, say you cannot confirm it "
+  "rather than asserting it is broken.\n"
+  "- Prefer 'I can't confirm X without running it' over a confident wrong claim.\n"
+  "Skip style nits. If you find nothing solid, say so plainly. Be concise.")
+usermsg=f"Review this file: {os.path.basename(path)}\n\n{numbered}"
+# Clamp so prompt + completion stays under the 32K context window (else 500).
+mt=max(2048, min(int(os.environ["MAXTOK"]), 31000-(len(sysmsg)+len(usermsg))//4))
+# STREAM: the device gateway enforces a 120s *idle* timeout (silent prefill/thinking
+# 504s before the first token). Streaming keeps tokens flowing so the timeout never
+# fires — and shows output live instead of ~60-120s of silence.
+body={"model":os.environ["ROUTE"],"max_tokens":mt,"stream":True,
+      "messages":[{"role":"system","content":sysmsg},{"role":"user","content":usermsg}]}
+r=urllib.request.Request("http://127.0.0.1:47600/v1/chat/completions",method="POST",
+    headers={"Authorization":"Bearer local","Content-Type":"application/json"},
+    data=json.dumps(body).encode())
+if truncated: print(f"[ttt review: {os.path.basename(path)} — first {MAXLINES} of {len(src)} lines]\n")
+parts=[]; finish=None
+try:
+    with urllib.request.urlopen(r,timeout=600) as resp:
+        for raw in resp:
+            line=raw.decode("utf-8","replace").strip()
+            if not line.startswith("data:"): continue
+            data=line[5:].strip()
+            if data=="[DONE]": break
+            try: ch=json.loads(data)["choices"][0]
+            except Exception: continue
+            piece=(ch.get("delta") or {}).get("content")
+            if piece: parts.append(piece); sys.stdout.write(piece); sys.stdout.flush()
+            if ch.get("finish_reason"): finish=ch["finish_reason"]
+except Exception as e:
+    if not parts:
+        smart=os.environ["ROUTE"]=="tiiny/default"
+        hint=("the Thinking model likely timed out — use fast review or a smaller section") \
+             if smart else "retry (first call after a model swap can 500)"
+        raise SystemExit(f"ttt review: device error ({type(e).__name__}: {e}); {hint}")
+    sys.stderr.write(f"\n[stream ended early: {type(e).__name__}]\n")
+print()
+if finish=="length": print("[ttt: output truncated — review a smaller section]")
+print("— first-pass review by a small local model; findings are UNVERIFIED and "
+      "may be wrong. Confirm each before acting; for subtle systems/protocol code, "
+      "re-run with --smart (Thinking).")
+PYEOF
+    ;;
+
+  judge)
+    [ ${#ARGS[@]} -lt 2 ] && { echo "usage: ttt judge <rubric_file> <candidate_file> [--smart]" >&2; exit 1; }
+    RUB="${ARGS[0]}"; CAND="${ARGS[1]}"
+    { [ -f "$RUB" ] && [ -f "$CAND" ]; } || { echo "need two existing files: <rubric> <candidate>" >&2; exit 1; }
+    ROUTE="tiiny-fast/default"; MAXTOK=2048
+    [ "$SMART" = 1 ] && { ROUTE="tiiny/default"; MAXTOK=16384; }
+    RUBRIC="$(cat "$RUB")" CANDIDATE="$(cat "$CAND")" ROUTE="$ROUTE" MAXTOK="$MAXTOK" "$PY" - <<'PYEOF'
+import json,os,sys,urllib.request
+sysmsg=("You are a STRICT grader. You get a numbered rubric of expected items and "
+  "a candidate text. For EACH rubric item, output exactly one line: "
+  "'<n>. FOUND — \"<short quote from candidate>\"' if the candidate genuinely and "
+  "specifically identifies that item, otherwise '<n>. MISSED'. Do NOT credit an "
+  "item unless the candidate clearly addresses THAT item (a keyword appearing in "
+  "unrelated text or in quoted source code does not count). End with 'SCORE: X/N'.")
+user=f"RUBRIC (expected items):\n{os.environ['RUBRIC']}\n\nCANDIDATE (text to grade):\n{os.environ['CANDIDATE']}"
+mt=max(1024, min(int(os.environ["MAXTOK"]), 31000-(len(sysmsg)+len(user))//4))  # fit 32K context
+body={"model":os.environ["ROUTE"],"max_tokens":mt,"stream":True,  # stream: beat the 120s idle-timeout
+      "messages":[{"role":"system","content":sysmsg},{"role":"user","content":user}]}
+r=urllib.request.Request("http://127.0.0.1:47600/v1/chat/completions",method="POST",
+    headers={"Authorization":"Bearer local","Content-Type":"application/json"},
+    data=json.dumps(body).encode())
+parts=[]; finish=None
+try:
+    with urllib.request.urlopen(r,timeout=600) as resp:
+        for raw in resp:
+            line=raw.decode("utf-8","replace").strip()
+            if not line.startswith("data:"): continue
+            data=line[5:].strip()
+            if data=="[DONE]": break
+            try: ch=json.loads(data)["choices"][0]
+            except Exception: continue
+            piece=(ch.get("delta") or {}).get("content")
+            if piece: parts.append(piece); sys.stdout.write(piece); sys.stdout.flush()
+            if ch.get("finish_reason"): finish=ch["finish_reason"]
+except Exception as e:
+    if not parts: raise SystemExit(f"ttt judge: device error ({type(e).__name__}: {e}); retry")
+    sys.stderr.write(f"\n[stream ended early: {type(e).__name__}]\n")
+print()
+if finish=="length": print("[ttt: truncated — raise --smart budget]")
+PYEOF
+    ;;
+
+  image)
+    IMG_PROMPT="$(payload_text 'ttt image "<prompt>" | FILE | -   [--transparent] [--px N] [--out FILE]')"
+    ARGS=("$IMG_PROMPT")
+    IMG_MODEL="Tongyi-MAI/Z-Image-Turbo"
+    OUT="${OUT_ARG:-./ttt-image-$(date +%H%M%S).png}"
+    # ensure the image model is loaded (it coexists with the chat model on the device)
+    if ! curl -s -m 10 "${MGMT}/models/running" -H "Authorization: Bearer $KEY" | grep -qF "$IMG_MODEL"; then
+      echo "loading $IMG_MODEL (first time ~20-40s)…" >&2
+      curl -s -m 60 -X POST "${MGMT}/models/$IMG_MODEL/start" -H "Authorization: Bearer $KEY" >/dev/null
+      for _ in $(seq 1 24); do
+        curl -s -m 10 "${MGMT}/models/running" -H "Authorization: Bearer $KEY" | grep -qF "$IMG_MODEL" && break
+        sleep 5
+      done
+    fi
+    echo "generating 512x512 (~38s)…" >&2
+    PROMPT="${ARGS[0]}" TRANSPARENT="$TRANSPARENT" PX="$PX_ARG" OUT="$OUT" IP="$IP" KEY="$KEY" \
+      NEG="blurry, washed out, gradient background, shadow, deformed" "$PY" - <<'PYEOF'
+import json,os,sys,base64,urllib.request,urllib.error
+prompt=os.environ["PROMPT"]; transparent=os.environ.get("TRANSPARENT")=="1"; out=os.environ["OUT"]
+# --transparent needs a keyable flat plate; add one if the prompt doesn't ask for a bg
+if transparent and "background" not in prompt.lower():
+    prompt=prompt+", flat solid green screen background, no shadow"
+# device text-encoder caps ~77 tokens; overlong prompts return HTTP 500 (code 150004)
+if len(prompt)>260:
+    sys.stderr.write(f"warning: prompt is {len(prompt)} chars; the device may 500 over ~260. Trimming.\n")
+    prompt=prompt[:260]
+body={"model":"Tongyi-MAI/Z-Image-Turbo","prompt":prompt,"n":1,"size":"512x512",
+      "response_format":"b64_json","negative_prompt":os.environ.get("NEG","")}
+r=urllib.request.Request("http://"+os.environ["IP"]+"/v1/images/generations",method="POST",
+    headers={"Authorization":"Bearer "+os.environ["KEY"],"Content-Type":"application/json"},
+    data=json.dumps(body).encode())
+try:
+    d=json.loads(urllib.request.urlopen(r,timeout=240).read())
+except urllib.error.HTTPError as e:
+    if e.code == 502:
+        raise SystemExit("ttt image: device returned 502 — /data is probably locked. Run:  ttt unlock")
+    raise SystemExit(f"ttt image: device HTTP {e.code} ({e.read().decode('utf-8','replace')[:120]}); "
+                     f"note: size is fixed at 512x512 and prompts must be short.")
+open(out,"wb").write(base64.b64decode(d["data"][0]["b64_json"]))
+if transparent:
+    from PIL import Image, ImageFilter
+    from collections import deque
+    im=Image.open(out).convert("RGB"); H,Sa,V=im.convert("HSV").split()
+    hp,sp,vp=H.load(),Sa.load(),V.load(); rp=im.load(); w,h=im.size
+    green=bytearray(w*h)
+    for y in range(h):
+        for x in range(w):
+            if 50<=hp[x,y]<=125 and sp[x,y]>=55 and vp[x,y]>=55: green[y*w+x]=1
+    # flood-fill green from the BORDER: only background connected to the edge is
+    # removed, so green speckles/holes *inside* the subject stay opaque (then get
+    # despilled) — fills eye-gaps and matte speckling automatically.
+    seen=bytearray(w*h); dq=deque()
+    for x in range(w):
+        for y in (0,h-1):
+            i=y*w+x
+            if green[i] and not seen[i]: seen[i]=1; dq.append((x,y))
+    for y in range(h):
+        for x in (0,w-1):
+            i=y*w+x
+            if green[i] and not seen[i]: seen[i]=1; dq.append((x,y))
+    while dq:
+        x,y=dq.popleft()
+        for dx,dy in ((1,0),(-1,0),(0,1),(0,-1)):
+            nx,ny=x+dx,y+dy
+            if 0<=nx<w and 0<=ny<h:
+                j=ny*w+nx
+                if green[j] and not seen[j]: seen[j]=1; dq.append((nx,ny))
+    o=Image.new("RGBA",(w,h)); op=o.load()
+    for y in range(h):
+        for x in range(w):
+            r_,g,b=rp[x,y]
+            if seen[y*w+x]: op[x,y]=(r_,g,b,0)                    # edge-connected green -> clear
+            else: op[x,y]=(r_, min(g, max(r_,b)), b, 255)         # subject: hard green despill
+    o.putalpha(o.getchannel("A").filter(ImageFilter.GaussianBlur(0.6)))  # soften the edge
+    o.save(out)
+px=os.environ.get("PX")
+if px:                                    # --px N: downscale to an NxN pixel-art sprite
+    from PIL import Image
+    n=int(px); im2=Image.open(out)
+    if im2.mode=="RGBA":
+        im2=im2.crop(im2.getchannel("A").getbbox())     # tight-crop to the subject first
+        w2,h2=im2.size; sc=n/max(w2,h2)
+        sm=im2.resize((max(1,round(w2*sc)),max(1,round(h2*sc))),Image.LANCZOS)
+        r2,g2,b2,a2=sm.split(); a2=a2.point(lambda v:255 if v>=110 else 0)   # hard pixel edges
+        rgb=Image.merge("RGB",(r2,g2,b2)).quantize(colors=16,method=Image.MEDIANCUT).convert("RGB")
+        Image.merge("RGBA",(*rgb.split(),a2)).save(out)
+    else:
+        im2=im2.convert("RGB"); w2,h2=im2.size; sc=n/max(w2,h2)
+        im2.resize((max(1,round(w2*sc)),max(1,round(h2*sc))),Image.LANCZOS)\
+           .quantize(colors=16,method=Image.MEDIANCUT).convert("RGB").save(out)
+print(out)
+PYEOF
+    ;;
+
+  embed)
+    { [ ${#ARGS[@]} -gt 0 ] || [ -n "$FILE_ARG" ]; } || { echo "usage: ttt embed \"<text>\" [\"<t2>\" …]  |  ttt embed --file FILE" >&2; exit 1; }
+    [ -n "$FILE_ARG" ] && [ ! -f "$FILE_ARG" ] && { echo "no such file: $FILE_ARG" >&2; exit 1; }
+    EMB_MODEL="Qwen/Qwen3-Embedding-0.6B"
+    if ! curl -s -m 10 "${MGMT}/models/running" -H "Authorization: Bearer $KEY" | grep -qF "$EMB_MODEL"; then
+      echo "loading $EMB_MODEL…" >&2
+      curl -s -m 60 -X POST "${MGMT}/models/$EMB_MODEL/start" -H "Authorization: Bearer $KEY" >/dev/null
+      for _ in $(seq 1 20); do
+        curl -s -m 10 "${MGMT}/models/running" -H "Authorization: Bearer $KEY" | grep -qF "$EMB_MODEL" && break
+        sleep 3
+      done
+    fi
+    # batch inputs: --file (one text per line) OR each positional arg = one input.
+    # a single positional arg stays single-string mode (its output is one vector).
+    INFILE=""
+    if [ -n "$FILE_ARG" ]; then INFILE="$FILE_ARG"
+    elif [ ${#ARGS[@]} -gt 1 ]; then INFILE="$(mktemp)"; printf '%s\n' "${ARGS[@]}" > "$INFILE"; fi
+    INFILE="$INFILE" SINGLE="${ARGS[0]:-}" IP="$IP" KEY="$KEY" EMB_MODEL="$EMB_MODEL" "$PY" - <<'PYEOF'
+import json,os,sys,urllib.request,urllib.error
+infile=os.environ["INFILE"]
+if infile:
+    payload=[ln.rstrip("\n") for ln in open(infile,encoding="utf-8") if ln.strip()]
+else:
+    payload=os.environ["SINGLE"]          # single string
+body={"model":os.environ["EMB_MODEL"],"input":payload}
+r=urllib.request.Request("http://"+os.environ["IP"]+"/v1/embeddings",method="POST",
+    headers={"Authorization":"Bearer "+os.environ["KEY"],"Content-Type":"application/json"},
+    data=json.dumps(body).encode())
+try:
+    d=json.loads(urllib.request.urlopen(r,timeout=120).read())
+except urllib.error.HTTPError as e:
+    if e.code == 502:
+        raise SystemExit("ttt embed: device returned 502 — /data is probably locked. Run:  ttt unlock")
+    raise SystemExit(f"ttt embed: device HTTP {e.code} ({e.read().decode('utf-8','replace')[:120]})")
+data=sorted(d["data"], key=lambda x: x.get("index",0))
+tok=d.get("usage",{}).get("total_tokens")
+if isinstance(payload,list):                # batch -> JSONL, one vector per line (aligned to inputs)
+    sys.stderr.write(f"dim={len(data[0]['embedding'])}  count={len(data)}  tokens={tok}\n")
+    for it in data: print(json.dumps(it["embedding"]))
+else:
+    v=data[0]["embedding"]
+    sys.stderr.write(f"dim={len(v)}  tokens={tok}\n")
+    print(json.dumps(v))
+PYEOF
+    ;;
+
+  ocr)
+    # image -> text. TWO backends (default 'tiiny'):
+    #   tiiny    — a vision model ON THE DEVICE (Image-Text-to-Text). More accurate
+    #              on messy/handwritten text and can follow instructions, but it is a
+    #              CHAT model: loading it EVICTS the current chat model (device serves
+    #              one at a time). Needs a device token.
+    #   rapidocr — host CPU (RapidOCR/ONNX): ~1s, free, no device, no token, no
+    #              eviction. Best for clean docs/screenshots.
+    # OCR is a feeding step: `ttt ocr shot.png | ttt ask "summarize this"`.
+    # Defaults come from config (TTT_OCR_ENGINE / TTT_OCR_MODEL); --engine/--model win.
+    IMG="$(payload_file 'ttt ocr IMAGE | -   [--engine tiiny|rapidocr] [--model ID] [--out FILE]')"
+    ENGINE="${ENGINE_ARG:-${TTT_OCR_ENGINE:-tiiny}}"
+    case "$ENGINE" in
+      tiiny)
+        [ -n "$KEY" ] || { echo "ttt ocr: engine 'tiiny' needs a device token (set TIINY_AUTH_KEY) — or use --engine rapidocr for host CPU OCR." >&2; exit 1; }
+        OCR_MODEL="${MODEL_ARG:-${TTT_OCR_MODEL:-Qwen/Qwen3.6-35B-A3B-turbo}}"
+        if [ "$(loaded_model)" != "$OCR_MODEL" ]; then
+          echo "ttt ocr: loading $OCR_MODEL on the device (evicts the current chat model; ~30-60s)…" >&2
+          ensure_loaded "$OCR_MODEL" || { echo "ttt ocr: $OCR_MODEL failed to load — try --engine rapidocr, or a different --model." >&2; exit 1; }
+        fi
+        echo "ttt ocr: reading on device ($OCR_MODEL)…" >&2
+        IMG="$IMG" MODEL="$OCR_MODEL" IP="$IP" KEY="$KEY" OUT="$OUT_ARG" "$PY" - <<'PYEOF'
+import os,sys,json,base64,urllib.request,urllib.error
+img=os.environ["IMG"]; out=os.environ.get("OUT","")
+ext=os.path.splitext(img)[1].lower().lstrip(".");
+mime={"jpg":"jpeg","jpeg":"jpeg","png":"png","webp":"webp","gif":"gif","bmp":"bmp"}.get(ext,"png")
+b=base64.b64encode(open(img,"rb").read()).decode()
+body={"model":os.environ["MODEL"],"stream":True,"max_tokens":4096,
+  "messages":[{"role":"user","content":[
+    {"type":"text","text":"Transcribe ALL text in this image exactly, preserving line breaks and reading order. Output only the transcribed text, nothing else."},
+    {"type":"image_url","image_url":{"url":f"data:image/{mime};base64,{b}"}}]}]}
+# stream so the device's 120s idle-timeout can't fire during prefill/thinking; the
+# model may emit reasoning first — we keep only the final `content` deltas.
+r=urllib.request.Request("http://"+os.environ["IP"]+"/v1/chat/completions",method="POST",
+  headers={"Authorization":"Bearer "+os.environ["KEY"],"Content-Type":"application/json"},
+  data=json.dumps(body).encode())
+parts=[]; finish=None
+try:
+    with urllib.request.urlopen(r,timeout=300) as resp:
+        for raw in resp:
+            line=raw.decode("utf-8","replace").strip()
+            if not line.startswith("data:"): continue
+            data=line[5:].strip()
+            if data=="[DONE]": break
+            try: ch=json.loads(data)["choices"][0]
+            except Exception: continue
+            piece=(ch.get("delta") or {}).get("content")
+            if piece: parts.append(piece)
+            if ch.get("finish_reason"): finish=ch["finish_reason"]
+except urllib.error.HTTPError as e:
+    if e.code == 502:
+        raise SystemExit("ttt ocr: device returned 502 — /data is probably locked. Run:  ttt unlock\n"
+                         "         (or use --engine rapidocr, which never touches the device)")
+    raise SystemExit(f"ttt ocr: device HTTP {e.code} ({e.read().decode('utf-8','replace')[:160]}); "
+                     f"model '{os.environ['MODEL']}' may not have vision enabled on-device — try --engine rapidocr or another --model.")
+except Exception as e:
+    if not parts: raise SystemExit(f"ttt ocr: device error ({type(e).__name__}: {e})")
+text="".join(parts).strip()
+if out:
+    with open(out,"w",encoding="utf-8") as fh: fh.write(text+("\n" if text else ""))
+    sys.stderr.write(f"ttt ocr: engine=tiiny model={os.environ['MODEL']} -> {out} ({len(text)} chars)\n")
+else:
+    if text: print(text)
+    sys.stderr.write(f"ttt ocr: engine=tiiny model={os.environ['MODEL']} ({len(text)} chars)\n")
+if finish=="length": sys.stderr.write("ttt ocr: hit the token cap — image may be text-heavy; rerun with a smaller crop.\n")
+PYEOF
+        ;;
+      rapidocr)
+        IMG="$IMG" OUT="$OUT_ARG" "$PY" - <<'PYEOF'
+import os,sys
+img=os.environ["IMG"]; out=os.environ.get("OUT","")
+try:
+    from rapidocr_onnxruntime import RapidOCR
+except Exception:
+    sys.stderr.write(
+        "ttt ocr: RapidOCR is not installed. It's the host CPU OCR engine — self-contained,\n"
+        "no sudo, bundles its ONNX models. Install it into the interpreter ttt uses:\n"
+        f"    {sys.executable} -m pip install rapidocr_onnxruntime\n"
+        "(or use the default engine: `ttt ocr <img>` runs on the device instead.)\n")
+    raise SystemExit(3)
+engine=RapidOCR()
+result,_=engine(img)                       # -> list of [box, text, score], or None
+lines=[r[1] for r in (result or [])]
+text="\n".join(lines)
+if out:
+    with open(out,"w",encoding="utf-8") as fh: fh.write(text+("\n" if text else ""))
+    sys.stderr.write(f"ttt ocr: {len(lines)} line(s), engine=rapidocr -> {out}\n")
+else:
+    if text: print(text)
+    sys.stderr.write(f"ttt ocr: {len(lines)} line(s), engine=rapidocr\n")
+PYEOF
+        ;;
+      *) echo "ttt ocr: unknown engine '$ENGINE' (expected: tiiny | rapidocr)" >&2; exit 2;;
+    esac
+    ;;
+
+  asr)
+    # audio -> text, on the device. Unlike `ocr`, this does NOT evict the chat
+    # model: the ASR model is ~7% of the NPU budget and sits alongside whatever
+    # else is resident. Measured ~5.9x real time over 226 minutes of speech
+    # spanning 1- to 63-minute files, so an hour of audio costs about ten minutes.
+    #
+    # THREE THINGS THAT LOOK LIKE STYLE AND ARE NOT, each of which cost hours to
+    # find because the gateway reports them all as the same silent timeout:
+    #
+    #   * The route is /v1/asr/recognize, NOT /v1/audio/transcriptions. The
+    #     OpenAI-compatible route exists and HANGS -- no response after 120s
+    #     locally, 504 through the gateway. The native route beneath it is fine.
+    #   * The multipart field is `audio`, not OpenAI's `file`. Sending `file`
+    #     returns "Missing required multipart file field 'audio'".
+    #   * The payload is RAW PCM16 (16 kHz mono s16le), not an encoded container.
+    #     Sending mp3 returns "PCM16 data must be non-empty with even byte count".
+    #
+    # Audio is sent in windows because the gateway kills any request at 60s, and
+    # a whole 8-minute file needs ~80s. Each window carries its offset so the
+    # timestamps stay absolute.
+    AUD="$(payload_file 'ttt asr AUDIO | -   [--model ID] [--out FILE] [--timestamps]')"
+    command -v ffmpeg >/dev/null || { echo "ttt asr: needs ffmpeg (converts audio to the raw PCM16 the device expects)" >&2; exit 1; }
+    [ -n "$KEY" ] || { echo "ttt asr: needs a device token (set TIINY_AUTH_KEY)" >&2; exit 1; }
+    ASR_MODEL="${MODEL_ARG:-${TTT_ASR_MODEL:-Qwen/Qwen3-ASR-1.7B}}"
+    if ! curl -s -m 10 -H "Authorization: Bearer $KEY" "http://$IP/v1/models" | grep -q "ASR"; then
+      echo "ttt asr: loading $ASR_MODEL on the device (~30s; does not evict the chat model)…" >&2
+      ensure_loaded "$ASR_MODEL" || { echo "ttt asr: $ASR_MODEL failed to load" >&2; exit 1; }
+    fi
+    AUD="$AUD" MODEL="$ASR_MODEL" IP="$IP" KEY="$KEY" OUT="$OUT_ARG" STAMPS="$STAMPS" "$PY" - <<'PYEOF'
+import json, os, subprocess, sys, urllib.request
+
+RATE, SEG = 16000, 120          # 120s per request: ~20s of work, well inside the 60s cap
+aud, out, stamps = os.environ["AUD"], os.environ.get("OUT", ""), os.environ.get("STAMPS") == "1"
+pcm = subprocess.run(["ffmpeg", "-v", "error", "-i", aud, "-f", "s16le",
+                      "-ar", str(RATE), "-ac", "1", "-"], capture_output=True).stdout
+if not pcm:
+    sys.exit("ttt asr: ffmpeg produced no audio from %s" % aud)
+
+def recognise(chunk):
+    body = (b'--X\r\nContent-Disposition: form-data; name="audio"; filename="a.raw"\r\n'
+            b"Content-Type: application/octet-stream\r\n\r\n" + chunk + b"\r\n--X--\r\n")
+    req = urllib.request.Request("http://" + os.environ["IP"] + "/v1/asr/recognize",
+        data=body, method="POST",
+        headers={"Content-Type": "multipart/form-data; boundary=X",
+                 "Authorization": "Bearer " + os.environ["KEY"]})
+    with urllib.request.urlopen(req, timeout=300) as r:
+        d = json.loads(r.read())
+    alt = ((d.get("channel") or {}).get("alternatives") or [{}])[0]
+    return alt.get("transcript", "")
+
+step, lines = SEG * RATE * 2, []
+for off in range(0, len(pcm), step):
+    part = pcm[off:off + step]
+    if len(part) < RATE * 2:              # under a second of audio
+        continue
+    t = off / (RATE * 2.0)
+    try:
+        txt = recognise(part)
+    except Exception as e:                # a failed window is UNMEASURED, not empty
+        print("ttt asr: window at %ds failed: %s" % (int(t), str(e)[:70]), file=sys.stderr)
+        continue
+    if not txt:
+        continue
+    lines.append("[%02d:%02d:%02d] %s" % (t // 3600, (t % 3600) // 60, t % 60, txt)
+                 if stamps else txt)
+
+text = ("\n" if stamps else " ").join(lines).strip()
+if out:
+    open(out, "w", encoding="utf-8").write(text + "\n")
+    print("ttt asr: wrote %s (%d chars)" % (out, len(text)), file=sys.stderr)
+else:
+    print(text)
+PYEOF
+    ;;
+
+  models)
+    # --all lists every model INSTALLED on the device (what you can load), not
+    # just what's currently serving. The device holds ~20 models but loads one
+    # at a time, so "loaded" and "available" are very different questions.
+    if [ "$ALL" = 1 ]; then
+      resp="$(curl -s -m 15 -w '\n%{http_code}' -L "${MGMT}/models/" -H "Authorization: Bearer $KEY" 2>/dev/null || true)"
+      code="${resp##*$'\n'}"; body="${resp%$'\n'*}"
+      case "$code" in
+        200) ;;
+        401|403) echo "ttt: device rejected the token (HTTP $code). Check TIINY_AUTH_KEY." >&2; exit 1;;
+        502)     lock_hint; exit 1;;
+        000|"")  echo "ttt: no response from ${MGMT%/api/v1} — device or bridge unreachable." >&2; exit 1;;
+        *)       echo "ttt: device returned HTTP $code" >&2; exit 1;;
+      esac
+      printf '%s' "$body" | "$PY" -c "
+import json,sys
+d=json.load(sys.stdin)
+items=d if isinstance(d,list) else (d.get('data') or d.get('models') or [])
+run=[m for m in items if (m.get('status') or '')=='running']
+print(f'{len(items)} models on the device ({len(run)} loaded):')
+for m in sorted(items, key=lambda x:(x.get('status')!='running', (x.get('model_id') or ''))):
+    mid=m.get('model_id') or m.get('fullname') or '?'
+    sz=(m.get('total_size') or m.get('size') or 0)/2**30
+    mark='*' if (m.get('status') or '')=='running' else ' '
+    print(f'  {mark} {sz:6.1f} GiB  {mid}')
+print()
+print('  * = loaded now.  Load another with:  ttt load <ID>')"
+      exit 0
+    fi
+    # Capture the HTTP status separately. Previously a 401 rendered as an empty
+    # "loaded on device:" list — an auth failure and an idle device looked
+    # identical, which is the same silent-failure class we've been filing against
+    # the device's own API. Don't reproduce it here.
+    resp="$(curl -s -m 10 -w '\n%{http_code}' "${MGMT}/models/running" -H "Authorization: Bearer $KEY" 2>/dev/null || true)"
+    code="${resp##*$'\n'}"; body="${resp%$'\n'*}"
+    case "$code" in
+      200) ;;
+      401|403) echo "ttt: device rejected the token (HTTP $code). Check TIINY_AUTH_KEY." >&2; exit 1;;
+      502)     lock_hint; exit 1;;
+      000|"")  echo "ttt: no response from ${MGMT%/api/v1} — device or bridge unreachable." >&2; exit 1;;
+      *)       echo "ttt: device returned HTTP $code from ${MGMT}/models/running" >&2; exit 1;;
+    esac
+    printf '%s' "$body" | "$PY" -c "
+import json,sys
+try: d=json.load(sys.stdin)
+except Exception: print('ttt: unparseable response from the device', file=sys.stderr); raise SystemExit(1)
+r=d.get('running',[])
+print('loaded on device:' if r else 'no models loaded on the device')
+[print('  •',m) for m in r]"
+    ;;
+
+  unload)
+    # Proxies the vendor CLI, which already does this well; the API path is the
+    # fallback for hosts without it.
+    if [ "${ARGS[0]:-}" = "--all" ] || [ "$ALL" = 1 ]; then
+      if command -v tiiny >/dev/null 2>&1; then exec tiiny unload --all -y; fi
+      curl -s -m 60 -X POST "${MGMT}/models/unload_all" -H "Authorization: Bearer $KEY" >/dev/null
+      echo "unloaded all models"; exit 0
+    fi
+    if [ -z "${ARGS[0]:-}" ]; then echo "usage: ttt unload <alias|MODEL_ID> | --all" >&2; exit 1; fi
+    MODEL="$(resolve_model "${ARGS[0]}")"
+    if command -v tiiny >/dev/null 2>&1; then exec tiiny unload "$MODEL" -y; fi
+    curl -s -m 60 -X POST "${MGMT}/models/$(printf '%s' "$MODEL" | sed 's#/#%2F#g')/stop" \
+      -H "Authorization: Bearer $KEY" >/dev/null
+    echo "unloaded: $MODEL"
+    ;;
+
+  load)
+    if [ -z "${ARGS[0]:-}" ]; then
+      echo "usage: ttt load <alias|MODEL_ID>" >&2
+      echo "aliases: fast smart 35b small coder tts asr embed (override in $MODELS_CONF)" >&2
+      exit 1
+    fi
+    MODEL="$(resolve_model "${ARGS[0]}")"
+    cur="$(loaded_model)"
+    if [ "$cur" = "$MODEL" ]; then echo "already loaded: $MODEL"; exit 0; fi
+    # The vendor CLI schedules this properly (and prints its own progress), so
+    # prefer it; the API path below runs where it isn't installed.
+    if command -v tiiny >/dev/null 2>&1; then
+      echo "loading $MODEL via the tiiny CLI…" >&2
+      exec tiiny load "$MODEL"
+    fi
+    echo "loading $MODEL (stopping others; this can take 30-60s)…" >&2
+    running=$(curl -s -m 10 "${MGMT}/models/running" -H "Authorization: Bearer $KEY" \
+      | "$PY" -c "import json,sys;print(' '.join(m for m in json.load(sys.stdin).get('running',[]) if 'mbed' not in m and '/' in m))")
+    for m in $running; do
+      [ "$m" = "$MODEL" ] && continue
+      curl -s -m 60 -X POST "${MGMT}/models/$m/stop" -H "Authorization: Bearer $KEY" >/dev/null
+    done
+    curl -s -m 120 -X POST "${MGMT}/models/$MODEL/start" -H "Authorization: Bearer $KEY" >/dev/null
+    for _ in $(seq 1 40); do
+      [ "$(loaded_model)" = "$MODEL" ] && { echo "loaded: $MODEL"; exit 0; }
+      sleep 3
+    done
+    echo "warning: $MODEL did not report loaded within timeout — check 'ttt models'" >&2; exit 1
+    ;;
+
+  status)
+    echo "device $IP:"
+    st="$(device_state)"
+    if [ "$st" = "unlocked" ]; then
+      echo "  /data:  unlocked"
+    else
+      echo "  /data:  $st — run 'ttt unlock' (everything 502s until then)"
+    fi
+    curl -s -m 8 "${MGMT}/models/running" -H "Authorization: Bearer $KEY" \
+      | "$PY" -c "import json,sys;d=json.load(sys.stdin);print('  models:',', '.join(d.get('running',[])) or '(none)')" 2>/dev/null \
+      || echo "  UNREACHABLE"
+    printf "woollama 127.0.0.1:47600: "
+    curl -s -m 5 http://127.0.0.1:47600/v1/models -H "Authorization: Bearer local" >/dev/null 2>&1 \
+      && echo "up" || echo "DOWN"
+    ;;
+
+  unlock)
+    # Same unlock the desktop app performs: the AUTH KEY ALONE, no decryption
+    # password. Then wait for the model API to actually answer — data_state
+    # flips to "unlocked" before the backend finishes coming up, and a caller
+    # who stops at the flag gets a 502 a second later.
+    st="$(device_state)"
+    if [ "$st" = "unlocked" ]; then
+      echo "already unlocked."
+      exit 0
+    fi
+    echo "data_state: $st — requesting unlock…"
+    hdr=()
+    if [ -n "${TIINY_IP:-}" ]; then hdr=(-H "Host: ${TIINY_AUTH_HOST:-auth.api.tiiny}"); fi
+    resp="$(curl -s -m 40 "${hdr[@]}" -X POST -H 'Content-Type: application/json' \
+      -d "{\"auth_key\":\"$KEY\"}" "$(auth_base)/account/unlock_with_auth_key" 2>/dev/null || true)"
+    printf '%s' "$resp" | "$PY" -c "
+import json,sys
+raw=sys.stdin.read()
+try:
+    d=json.loads(raw)
+    print('  device says: status=%s data_state=%s' % (d.get('status'), d.get('data_state')))
+except Exception:
+    print('  device returned:', (raw[:120] or '(empty)'))" || true
+    echo "waiting for /data to mount and the model API to answer…"
+    for i in $(seq 1 45); do
+      st="$(device_state)"
+      code="$(curl -s -m 8 -o /dev/null -w '%{http_code}' "http://$IP/v1/models" \
+        -H "Authorization: Bearer $KEY" 2>/dev/null || echo 000)"
+      if [ "$st" = "unlocked" ] && [ "$code" = "200" ]; then
+        echo "unlocked — model API ready (t+$((i*6))s)"
+        exit 0
+      fi
+      if [ $((i % 3)) -eq 0 ]; then
+        echo "  t+$((i*6))s: data_state=$st model_api=$code"
+      fi
+      sleep 6
+    done
+    echo "ttt unlock: unlock requested, but the model API did not answer within ~4½ min." >&2
+    echo "       check 'ttt status'; if data_state is still locked the key may be wrong." >&2
+    exit 1
+    ;;
+
+  say)
+    # Text to speech on the device. The TTS service 503s unless its model is
+    # resident, and the model is cheap (0% NPU), so load it on demand rather
+    # than making the caller do it.
+    SAY_TEXT="$(payload_text 'ttt say "<text>" | FILE | -   [--voice F1..F5|M1..M5] [--lang L] [--play] [--out FILE]')"
+    if [ -z "$SAY_TEXT" ]; then echo "ttt say: nothing to speak" >&2; exit 1; fi
+    SAY_MODEL="$(resolve_model "${MODEL_ARG:-${TTT_TTS_MODEL:-tts}}")"
+    SAY_VOICE="${VOICE_ARG:-${TTT_VOICE:-F1}}"
+    SAY_LANG="${LANG_ARG:-${TTT_SAY_LANG:-auto}}"
+    SAY_OUT="${OUT_ARG:-}"
+    if [ -z "$SAY_OUT" ]; then SAY_OUT="$(mktemp -t ttt-say-XXXXXX.wav)"; TMP_SAY=1; else TMP_SAY=0; fi
+    ensure_service_model "$SAY_MODEL" || { echo "ttt say: $SAY_MODEL did not load" >&2; exit 1; }
+    req="$("$PY" -c "
+import json,os,sys
+print(json.dumps({'model':sys.argv[1],'input':sys.argv[2],'voice':sys.argv[3],'language':sys.argv[4]}))" \
+      "$SAY_MODEL" "$SAY_TEXT" "$SAY_VOICE" "$SAY_LANG")"
+    code="$(curl -s -m 180 -o "$SAY_OUT" -w '%{http_code}' -X POST "http://$IP/v1/audio/speech" \
+      -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -d "$req" 2>/dev/null || echo 000)"
+    case "$code" in
+      200) ;;
+      502) lock_hint; exit 1;;
+      400) echo "ttt say: device rejected the request — voices are F1-F5 and M1-M5:" >&2
+           head -c 200 "$SAY_OUT" >&2; echo >&2; exit 1;;
+      *)   echo "ttt say: HTTP $code from the speech endpoint" >&2; head -c 200 "$SAY_OUT" >&2; echo >&2; exit 1;;
+    esac
+    if [ "$PLAY" = 1 ]; then
+      player=""
+      for p in paplay pw-play aplay ffplay; do command -v "$p" >/dev/null 2>&1 && { player="$p"; break; }; done
+      case "$player" in
+        "")     echo "ttt say: no audio player found (paplay, pw-play, aplay or ffplay)" >&2;;
+        ffplay) ffplay -autoexit -nodisp -loglevel error "$SAY_OUT" ;;
+        *)      "$player" "$SAY_OUT" ;;
+      esac
+    fi
+    if [ "$TMP_SAY" = 1 ]; then
+      [ "$PLAY" = 1 ] || echo "$SAY_OUT"
+      [ "$PLAY" = 1 ] && rm -f "$SAY_OUT"
+    else
+      echo "wrote $SAY_OUT" >&2
+    fi
+    ;;
+
+  listen)
+    # The microphone half of `say`: record locally, then hand the file to the
+    # asr path, which already knows the device's raw-PCM contract.
+    SECS="${SECS_ARG:-8}"
+    rec=""
+    for r in parecord pw-record arecord; do command -v "$r" >/dev/null 2>&1 && { rec="$r"; break; }; done
+    if [ -z "$rec" ]; then
+      echo "ttt listen: no recorder found (parecord, pw-record or arecord)" >&2; exit 1
+    fi
+    WAV="$(mktemp -t ttt-listen-XXXXXX.wav)"
+    echo "recording ${SECS}s from the default microphone… (ctrl-c to stop early)" >&2
+    case "$rec" in
+      parecord) timeout "$SECS" parecord --rate=16000 --channels=1 --format=s16le --file-format=wav "$WAV" || true;;
+      pw-record) timeout "$SECS" pw-record --rate=16000 --channels=1 --format=s16 "$WAV" || true;;
+      arecord)  timeout "$SECS" arecord -q -f S16_LE -r 16000 -c 1 -t wav "$WAV" || true;;
+    esac
+    if [ ! -s "$WAV" ]; then echo "ttt listen: recorded nothing — check the default input device" >&2; rm -f "$WAV"; exit 1; fi
+    echo "transcribing…" >&2
+    if [ -n "$OUT_ARG" ]; then "$HERE/ttt" asr "$WAV" --out "$OUT_ARG"; else "$HERE/ttt" asr "$WAV"; fi
+    rm -f "$WAV"
+    ;;
+
+  rerank)
+    # The device has a reranker loaded, but exposes no rerank route — so this
+    # is a prompt against the resident chat model. Good enough for ordering a
+    # handful of candidates; don't use it as a scoring function.
+    if [ ${#ARGS[@]} -lt 1 ] || { [ ${#ARGS[@]} -lt 2 ] && [ -z "$FILE_ARG" ]; }; then
+      echo "usage: ttt rerank \"<query>\" <candidate> [<candidate> …]" >&2
+      echo "       ttt rerank \"<query>\" --file candidates.txt      (one per line)" >&2
+      exit 1
+    fi
+    RQ="${ARGS[0]}"
+    if [ -n "$FILE_ARG" ]; then
+      [ -f "$FILE_ARG" ] || { echo "ttt rerank: not a file: $FILE_ARG" >&2; exit 1; }
+      mapfile -t CANDS < "$FILE_ARG"
+    else
+      CANDS=("${ARGS[@]:1}")
+    fi
+    RMODEL="$(loaded_model)"
+    if [ -z "$RMODEL" ]; then
+      echo "ttt rerank: no chat model loaded on the device — run 'ttt load fast'" >&2; exit 1
+    fi
+    RQ="$RQ" RMODEL="$RMODEL" IP="$IP" KEY="$KEY" "$PY" - "${CANDS[@]}" <<'PYEOF'
+import json, os, sys, urllib.request
+cands = [c for c in sys.argv[1:] if c.strip()]
+if not cands:
+    sys.exit("ttt rerank: no candidates")
+listing = "\n".join("%d. %s" % (i + 1, c) for i, c in enumerate(cands))
+prompt = ("Rank these candidates by how well they answer the query.\n"
+          "Reply with ONLY the numbers, best first, comma-separated. No words.\n\n"
+          "Query: %s\n\nCandidates:\n%s" % (os.environ["RQ"], listing))
+body = {"model": os.environ["RMODEL"], "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 64, "temperature": 0}
+req = urllib.request.Request("http://" + os.environ["IP"] + "/v1/chat/completions", method="POST",
+    headers={"Authorization": "Bearer " + os.environ["KEY"], "Content-Type": "application/json"},
+    data=json.dumps(body).encode())
+try:
+    d = json.loads(urllib.request.urlopen(req, timeout=120).read())
+except urllib.error.HTTPError as e:
+    if e.code == 502:
+        sys.exit("ttt rerank: device returned 502 — /data is probably locked. Run:  ttt unlock")
+    sys.exit("ttt rerank: device HTTP %s" % e.code)
+text = (d["choices"][0]["message"]["content"] or "").strip()
+order, seen = [], set()
+for tok in text.replace("\n", ",").split(","):
+    tok = "".join(ch for ch in tok if ch.isdigit())
+    if tok:
+        i = int(tok) - 1
+        if 0 <= i < len(cands) and i not in seen:
+            seen.add(i); order.append(i)
+order += [i for i in range(len(cands)) if i not in seen]   # anything it dropped, in original order
+for rank, i in enumerate(order, 1):
+    print("%d. %s" % (rank, cands[i]))
+if len(seen) < len(cands):
+    print("(%d of %d ranked; the rest kept their original order)" % (len(seen), len(cands)), file=sys.stderr)
+PYEOF
+    ;;
+
+  prompt|dialog)
+    # Plumbing first: text in, text out, chatter on stderr, so this composes.
+    #
+    #   ttt listen | ttt prompt --template selector.md | duckeye -Q -
+    #   cat notes.md | ttt prompt "summarise this" | ttt say --play
+    #
+    # `ttt dialog` (or `ttt prompt --dialog`) wraps the same machinery in a
+    # zenity entry and shows the answer in a window — for hotkeys and launchers.
+    # The answer still goes to stdout either way, so a dialog can also be a
+    # pipeline stage.
+    GUI=0
+    if [ "$cmd" = "dialog" ] || [ "$DIALOG" = 1 ]; then
+      if command -v zenity >/dev/null 2>&1 && [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+        GUI=1
+      else
+        echo "ttt $cmd: no zenity or no display — using text instead" >&2
+      fi
+    fi
+    # --template is its OWN flag, not --file: the template and the payload are
+    # independent, so `ttt prompt --template card.md --file question.txt` and
+    # `… | ttt prompt --template card.md` both work. (Before this was fixed,
+    # --template fell through to the positional args and became the question.)
+    TEMPLATE=""
+    if [ -n "$TEMPLATE_ARG" ]; then
+      [ -f "$TEMPLATE_ARG" ] || { echo "ttt $cmd: no such template: $TEMPLATE_ARG" >&2; exit 1; }
+      TEMPLATE="$(cat "$TEMPLATE_ARG")"
+    fi
+    # The dialog only asks when there is genuinely nothing to work from;
+    # otherwise the payload rule applies and this stays a pipeline stage.
+    if [ "$GUI" = 1 ] && [ -z "${ARGS[0]:-}" ] && [ -z "$TEXT_ARG" ] && [ -z "$FILE_ARG" ] && [ -t 0 ]; then
+      QTEXT="$(zenity --entry --title="ttt" --width=420 \
+               --text="${TEMPLATE:+Fill the template — }Ask the Tiiny device:" 2>/dev/null || true)"
+    else
+      QTEXT="$(payload_text 'ttt prompt "<text>" | FILE | -   [--template FILE] [--dialog]')"
+    fi
+    if [ -z "$QTEXT" ]; then echo "ttt prompt: nothing to ask" >&2; exit 1; fi
+    if [ -n "$TEMPLATE" ]; then
+      FULL="${TEMPLATE//\{\{input\}\}/$QTEXT}"
+      if [ "$FULL" = "$TEMPLATE" ]; then FULL="$TEMPLATE"$'\n\n'"$QTEXT"; fi   # no placeholder: append
+    else
+      FULL="$QTEXT"
+    fi
+    PMODEL="$(loaded_model)"
+    if [ -z "$PMODEL" ]; then
+      echo "ttt prompt: no chat model loaded — run 'ttt load fast'" >&2; exit 1
+    fi
+    ANSWER="$(FULL="$FULL" PMODEL="$PMODEL" IP="$IP" KEY="$KEY" "$PY" - <<'PYEOF'
+import json, os, sys, urllib.request
+body = {"model": os.environ["PMODEL"],
+        "messages": [{"role": "user", "content": os.environ["FULL"]}], "max_tokens": 1200}
+req = urllib.request.Request("http://" + os.environ["IP"] + "/v1/chat/completions", method="POST",
+    headers={"Authorization": "Bearer " + os.environ["KEY"], "Content-Type": "application/json"},
+    data=json.dumps(body).encode())
+try:
+    d = json.loads(urllib.request.urlopen(req, timeout=300).read())
+except urllib.error.HTTPError as e:
+    if e.code == 502:
+        sys.exit("ttt prompt: device returned 502 — /data is probably locked. Run:  ttt unlock")
+    sys.exit("ttt prompt: device HTTP %s" % e.code)
+print((d["choices"][0]["message"]["content"] or "").strip())
+PYEOF
+)"
+    if [ "$GUI" = 1 ]; then
+      printf '%s' "$ANSWER" | zenity --text-info --title="ttt — $PMODEL" --width=760 --height=520 2>/dev/null || printf '%s\n' "$ANSWER"
+    else
+      printf '%s\n' "$ANSWER"
+    fi
+    ;;
+
+  logs)
+    # The device keeps its own service log and exposes it over the API. This is
+    # where the REAL error lives: a store download that reports only "download
+    # failed" logs the HTTP status and URL it actually got, and a 500 from an
+    # inference route logs the traceback. Searchable by text, level and time.
+    # The log API answers ONLY on the device's own :8800 — it 404s through the
+    # p8800 vhost and through api.tiiny, unlike the rest of the model API. So
+    # find a direct route instead of making the caller supply one: explicit
+    # overrides first, then the proxy (harmless, and right if a later firmware
+    # exposes it), then the fixed USB /30, then the address pcsvr last recorded.
+    # Each candidate is tried against the real endpoint and the first 200 wins.
+    #
+    # Deliberately side-effect free: pick-device-ip.sh would find the device for
+    # us, but it REWRITES pcsvr's hosts file (and can trigger UDP discovery) as
+    # part of doing so, which is not something reading a log should do.
+    logs_base() {
+      local c code ip
+      local -a cands=()
+      if [ -n "${TIINY_LOGS_BASE:-}" ]; then cands+=("$TIINY_LOGS_BASE"); fi
+      if [ -n "${TIINY_IP:-}" ]; then cands+=("http://$TIINY_IP:8800/api/v1"); fi
+      # The vendor CLI already knows where the device is: `tiiny scan` records it
+      # as deviceAddress in ~/.tiiny/config.json. Read that rather than pcsvr's
+      # hosts file, which only exists on a desktop host that runs pcsvr. Only the
+      # address is read — the account's auth key sits in the same file and is no
+      # business of a log reader.
+      ip="$("$PY" -c "
+import json,os
+try: print(json.load(open(os.path.expanduser('~/.tiiny/config.json'))).get('deviceAddress') or '')
+except Exception: print('')" 2>/dev/null || true)"
+      if [ -n "$ip" ]; then cands+=("http://$ip:8800/api/v1"); fi
+      # The proxy answers fast (404 today, and correctly if a later firmware
+      # exposes this). The USB /30 goes LAST: off the host that holds the link
+      # it is unroutable, and an unroutable candidate costs the whole connect
+      # timeout on every single run.
+      cands+=("$MGMT" "http://172.20.19.89:8800/api/v1")
+      for c in "${cands[@]}"; do
+        code="$(curl -s -m 6 --connect-timeout 2 -o /dev/null -w '%{http_code}' "$c/model-logs/sessions" \
+                -H "Authorization: Bearer $KEY" 2>/dev/null || echo 000)"
+        if [ "$code" = "200" ]; then printf '%s' "$c"; return 0; fi
+      done
+      return 1
+    }
+    LOGS="$(logs_base || true)"
+    if [ -z "$LOGS" ]; then
+      echo "ttt logs: no route to the device's log API." >&2
+      echo "       It answers only on the device's own :8800 and 404s through the" >&2
+      echo "       gateway, unlike the rest of the model API. Tried TIINY_LOGS_BASE," >&2
+      echo "       TIINY_IP, the tiiny CLI's deviceAddress, ${MGMT} and the USB /30." >&2
+      echo "       If you have the vendor CLI, 'tiiny scan' records the address." >&2
+      exit 1
+    fi
+    SID="${SESSION_ARG:-$(curl -s -m 15 "${LOGS}/model-logs/sessions" -H "Authorization: Bearer $KEY" 2>/dev/null \
+      | "$PY" -c "
+import json,sys
+try: items=json.load(sys.stdin).get('items') or []
+except Exception: items=[]
+run=[s for s in items if s.get('status')=='running'] or items
+print(run[0]['session_id'] if run else '')" 2>/dev/null)}"
+    if [ -z "$SID" ]; then
+      # The route answered, so this is genuinely an empty log: the service
+      # writes sessions only once it is up.
+      echo "ttt logs: the log API at ${LOGS} reports no sessions." >&2
+      echo "       Is the device unlocked and serving? Try 'ttt doctor'." >&2
+      exit 1
+    fi
+    # Search term is optional here, so no usage error when nothing is given —
+    # but a piped or --text term still works like everywhere else.
+    Q=""
+    if [ -n "$TEXT_ARG" ]; then Q="$TEXT_ARG"
+    elif [ "${ARGS[0]:-}" = "-" ]; then Q="$(cat)"
+    elif [ -n "${ARGS[0]:-}" ]; then Q="${ARGS[0]}"; fi
+    # $LOGS, not $MGMT: the entries query has to go to the same direct route the
+    # session lookup used, or it 404s through the gateway and reads as "no
+    # matching entries" — an empty result that looks like an answer.
+    URL="${LOGS}/model-logs/sessions/${SID}/entries?order=desc&limit=${N_ARG:-40}"
+    if [ -n "$Q" ]; then URL="$URL&q=$("$PY" -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))" "$Q")"; fi
+    if [ "$ERRORS" = 1 ]; then URL="$URL&level=error"; fi
+    curl -s -m 30 "$URL" -H "Authorization: Bearer $KEY" | "$PY" -c "
+import json,sys
+try: d=json.load(sys.stdin)
+except Exception: sys.exit('ttt logs: unparseable response from the device')
+items=d.get('items') or []
+if not items: print('no matching log entries')
+for e in reversed(items):
+    det=e.get('details') or {}
+    print('%s %-7s %-28s %s' % (e.get('ts','')[11:19], e.get('level',''),
+          (det.get('logger') or '')[:28], (e.get('message') or '').replace(chr(10),' ')[:160]))"
+    ;;
+
+  doctor)
+    # Every failure mode this device has, checked in the order that tells them
+    # apart: a name that won't resolve, a bridge that's down, a locked /data, a
+    # rejected token and an idle-but-healthy device all look identical from a
+    # single failing request.
+    rc=0
+    printf 'name %-24s ' "$IP"
+    if [ -n "${TIINY_IP:-}" ]; then echo "(direct, TIINY_IP set)"
+    elif getent hosts "$IP" >/dev/null 2>&1; then echo "resolves -> $(getent hosts "$IP" | awk '{print $1; exit}')"
+    else echo "DOES NOT RESOLVE — point your resolver at whatever serves *.tiiny"; rc=1; fi
+    printf 'reachable %-19s ' ":80"
+    code="$(curl -s -m 8 -o /dev/null -w '%{http_code}' "http://$IP/v1/models" -H "Authorization: Bearer $KEY" 2>/dev/null || echo 000)"
+    case "$code" in
+      200) echo "yes (HTTP 200)";;
+      401|403) echo "reachable, but the token was REJECTED (HTTP $code) — check TIINY_AUTH_KEY"; rc=1;;
+      502) echo "HTTP 502 — /data is locked; run 'ttt unlock'"; rc=1;;
+      000) echo "no response — device off, bridge down, or wrong name"; rc=1;;
+      *) echo "HTTP $code"; rc=1;;
+    esac
+    printf '/data %-23s ' ""
+    st="$(device_state)"
+    if [ "$st" = "unlocked" ]; then echo "unlocked"; else echo "$st — run 'ttt unlock'"; rc=1; fi
+    printf 'management API %-14s ' ""
+    mcode="$(curl -s -m 8 -o /dev/null -w '%{http_code}' "${MGMT}/models/running" -H "Authorization: Bearer $KEY" 2>/dev/null || echo 000)"
+    if [ "$mcode" = "200" ]; then echo "yes (${MGMT})"; else echo "HTTP $mcode at ${MGMT} — :8800 is NOT proxied; use the p8800 vhost"; rc=1; fi
+    curl -s -m 10 "${MGMT}/models/npu/status" -H "Authorization: Bearer $KEY" 2>/dev/null | "$PY" -c "
+import json,sys
+try: d=json.load(sys.stdin)
+except Exception: print('NPU %-25s unreadable' % ''); raise SystemExit
+print('NPU %-25s %s%% used, %s%% free (models are budgeted as a %% of it)'
+      % ('', d.get('npu_used', '?'), d.get('npu_available', '?')))" 2>/dev/null || true
+    printf 'models loaded %-15s ' ""
+    curl -s -m 8 "${MGMT}/models/running" -H "Authorization: Bearer $KEY" 2>/dev/null \
+      | "$PY" -c "import json,sys;print(', '.join(json.load(sys.stdin).get('running',[])) or '(none — the device does not auto-load)')" 2>/dev/null || echo "unknown"
+    printf 'woollama %-20s ' "127.0.0.1:47600"
+    if curl -s -m 5 http://127.0.0.1:47600/v1/models -H "Authorization: Bearer local" >/dev/null 2>&1; then echo "up"; else echo "down (optional — only needed if you route through it)"; fi
+    if [ "$rc" = 0 ]; then echo; echo "all checks passed."; else echo; echo "see above: at least one check failed." >&2; fi
+    exit "$rc"
+    ;;
+
+  top)
+    # Residency here is a percentage of NPU memory, not a model count, and the
+    # device evicts on its own — so "what fits" is only answerable by looking.
+    # Path matters: /models/npu/status is proxied; /npu/status (the same
+    # service) 404s through the gateway and answers only on :8800 directly.
+    curl -s -m 10 "${MGMT}/models/npu/status" -H "Authorization: Bearer $KEY" | "$PY" -c "
+import json,sys
+try: d=json.load(sys.stdin)
+except Exception: sys.exit('ttt top: could not read the NPU budget')
+tot, used, free = d.get('npu_total', 100), d.get('npu_used', 0), d.get('npu_available', 0)
+bar = '#' * int(round(used * 30 / (tot or 100)))
+print('NPU %3s%% used  %3s%% free   [%-30s]' % (used, free, bar))"
+    echo
+    curl -s -m 10 "${MGMT}/models/running" -H "Authorization: Bearer $KEY" | "$PY" -c "
+import json,sys,time
+try: d=json.load(sys.stdin)
+except Exception: sys.exit('ttt top: could not read running models')
+inst=(d.get('instances') or {}).get('running') or []
+if not inst:
+    print('no models loaded (the device does not auto-load — ttt load <id>)'); raise SystemExit
+print('%-44s %5s %8s %10s' % ('model', 'npu%', 'inflight', 'last use'))
+for i in sorted(inst, key=lambda x: -(x.get('npu_usage') or 0)):
+    last=i.get('last_inference_time')
+    print('%-44s %5s %8s %10s' % ((i.get('model_id') or '?')[:44], i.get('npu_usage'),
+          i.get('active_request_count'), time.strftime('%H:%M:%S', time.localtime(last)) if last else '-'))"
+    ;;
+
+  api)
+    # Escape hatch: the model API has ~130 paths and this CLI wraps a handful.
+    # Handles the token, the vhost and the :8800-is-not-proxied trap for you.
+    if [ ${#ARGS[@]} -eq 0 ]; then
+      echo "usage: ttt api <PATH> [--post JSON]      e.g. ttt api /models/storage" >&2
+      echo "       paths are relative to ${MGMT}" >&2
+      exit 1
+    fi
+    APATH="${ARGS[0]}"
+    case "$APATH" in /*) ;; *) APATH="/$APATH";; esac
+    case "$APATH" in /api/v1/*) URL="${MGMT%/api/v1}$APATH";; *) URL="${MGMT}$APATH";; esac
+    if [ -n "$POST_ARG" ]; then
+      resp="$(curl -s -m 120 -w '\n%{http_code}' -X POST "$URL" -H "Authorization: Bearer $KEY" \
+        -H 'Content-Type: application/json' -d "$POST_ARG" 2>/dev/null || true)"
+    else
+      resp="$(curl -s -m 60 -w '\n%{http_code}' "$URL" -H "Authorization: Bearer $KEY" 2>/dev/null || true)"
+    fi
+    code="${resp##*$'\n'}"; body="${resp%$'\n'*}"
+    case "$code" in
+      200|201|202|204) ;;
+      502) lock_hint; exit 1;;
+      401|403) echo "ttt api: device rejected the token (HTTP $code)" >&2; exit 1;;
+      000|"") echo "ttt api: no response from $URL" >&2; exit 1;;
+      *) echo "ttt api: HTTP $code from $URL" >&2;;
+    esac
+    printf '%s' "$body" | "$PY" -c "
+import json,sys
+raw=sys.stdin.read()
+try: print(json.dumps(json.loads(raw), indent=2)[:20000])
+except Exception: print(raw[:4000])"
+    ;;
+
+  -h|--help|help) usage 0;;
+  *) echo "unknown command: $cmd" >&2; usage 1;;
+esac

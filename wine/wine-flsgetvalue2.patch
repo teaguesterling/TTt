@@ -1,0 +1,37 @@
+diff --git a/dlls/kernelbase/kernelbase.spec b/dlls/kernelbase/kernelbase.spec
+index 0dcf3ee..5e5b7b0 100644
+--- a/dlls/kernelbase/kernelbase.spec
++++ b/dlls/kernelbase/kernelbase.spec
+@@ -388,6 +388,7 @@
+ @ stdcall FlsAlloc(ptr)
+ @ stdcall FlsFree(long)
+ @ stdcall FlsGetValue(long)
++@ stdcall FlsGetValue2(long)
+ @ stdcall FlsSetValue(long ptr)
+ @ stdcall FlushConsoleInputBuffer(long)
+ @ stdcall FlushFileBuffers(long)
+diff --git a/dlls/kernelbase/thread.c b/dlls/kernelbase/thread.c
+index 9a8ce88..a153bed 100644
+--- a/dlls/kernelbase/thread.c
++++ b/dlls/kernelbase/thread.c
+@@ -1296,6 +1296,20 @@ PVOID WINAPI DECLSPEC_HOTPATCH FlsGetValue( DWORD index )
+ }
+ 
+ 
++/***********************************************************************
++ *           FlsGetValue2   (kernelbase.@)
++ *
++ * Same as FlsGetValue but does not update the last error value.
++ */
++PVOID WINAPI DECLSPEC_HOTPATCH FlsGetValue2( DWORD index )
++{
++    void *data;
++
++    if (!set_ntstatus( RtlFlsGetValue( index, &data ))) return NULL;
++    return data;
++}
++
++
+ /***********************************************************************
+  *           FlsSetValue   (kernelbase.@)
+  */

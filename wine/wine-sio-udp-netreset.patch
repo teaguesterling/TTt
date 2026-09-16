@@ -1,0 +1,43 @@
+diff --git a/dlls/ws2_32/socket.c b/dlls/ws2_32/socket.c
+index b2601c6..5f1297f 100644
+--- a/dlls/ws2_32/socket.c
++++ b/dlls/ws2_32/socket.c
+@@ -2343,6 +2343,7 @@ static const char *debugstr_wsaioctl(DWORD code)
+         IOCTL_NAME(SIO_SET_QOS);
+         IOCTL_NAME(SIO_TRANSLATE_HANDLE);
+         IOCTL_NAME(SIO_UDP_CONNRESET);
++        IOCTL_NAME(SIO_UDP_NETRESET);
+     }
+ #undef IOCTL_NAME
+ 
+@@ -2779,11 +2780,12 @@ INT WINAPI WSAIoctl(SOCKET s, DWORD code, LPVOID in_buff, DWORD in_size, LPVOID
+     }
+ 
+     case SIO_UDP_CONNRESET:
++    case SIO_UDP_NETRESET:
+     {
+         NTSTATUS status = STATUS_SUCCESS;
+         DWORD ret;
+ 
+-        FIXME( "SIO_UDP_CONNRESET stub\n" );
++        FIXME( "SIO_UDP_CONNRESET/NETRESET stub\n" );
+         ret = server_ioctl_sock( s, IOCTL_AFD_WINE_COMPLETE_ASYNC, &status, sizeof(status),
+                                  NULL, 0, ret_size, overlapped, completion );
+         SetLastError( ret );
+diff --git a/include/mswsock.h b/include/mswsock.h
+index fa97d5b..2a6d2a2 100644
+--- a/include/mswsock.h
++++ b/include/mswsock.h
+@@ -84,10 +84,12 @@ extern "C" {
+ 
+ #ifndef USE_WS_PREFIX
+ #define SIO_UDP_CONNRESET               _WSAIOW(IOC_VENDOR, 12)
++#define SIO_UDP_NETRESET                _WSAIOW(IOC_VENDOR, 15)
+ #define SIO_SET_COMPATIBILITY_MODE      _WSAIOW(IOC_VENDOR, 300)
+ #define SIO_BASE_HANDLE                 _WSAIOR(IOC_WS2, 34)
+ #else
+ #define WS_SIO_UDP_CONNRESET            _WSAIOW(WS_IOC_VENDOR, 12)
++#define WS_SIO_UDP_NETRESET             _WSAIOW(WS_IOC_VENDOR, 15)
+ #define WS_SIO_SET_COMPATIBILITY_MODE   _WSAIOW(WS_IOC_VENDOR, 300)
+ #define WS_SIO_BASE_HANDLE              _WSAIOR(WS_IOC_WS2, 34)
+ #endif

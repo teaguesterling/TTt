@@ -1,0 +1,30 @@
+# ttt model aliases — copy to ~/.config/ttt/models
+#
+# `alias = model id`, one per line. `ttt load smart`, `ttt unload coder`,
+# `ttt say --model tts` all resolve through this file first, then through the
+# built-in aliases below, and anything unrecognised is passed through as a
+# literal model id — so a full id always works.
+#
+# Which ids exist on your device:  ttt models --all
+#
+# The built-ins, for reference — redefine any of them here:
+#
+#   fast    Qwen/Qwen3-30B-A3B-Instruct
+#   smart   Qwen/Qwen3-30B-A3B-Thinking
+#   35b     Qwen/Qwen3.6-35B-A3B
+#   small   Qwen/Qwen3-8B
+#   coder   Qwen/Qwen3-Coder-30B-A3B-Instruct
+#   tts     Supertone/supertonic-3
+#   asr     Qwen/Qwen3-ASR-1.7B
+#   embed   Qwen/Qwen3-Embedding-0.6B
+
+# Example: point the everyday aliases at what you actually keep downloaded.
+# fast   = Qwen/Qwen3-Coder-30B-A3B-Instruct-Turbo
+# smart  = Qwen/Qwen3.6-35B-A3B
+# vision = Qwen/Qwen3.6-35B-A3B-turbo
+# ocr    = Qwen/Qwen3.6-35B-A3B-turbo
+# music  = tencent/SongGeneration-v2-large
+
+# Aliases are just names — nothing checks them until you load one. A model
+# budgeted above the free NPU percentage will evict something; `ttt top` shows
+# what is resident and how much of the budget is left.
