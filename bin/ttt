@@ -39,6 +39,8 @@
 #                                                     (reads stdin when given no argument, so it pipes)
 #   ttt dialog ["<text>"] [--template FILE]         same, wrapped in a zenity entry + answer window
 #                                                     (or: ttt prompt --dialog)
+#   ttt duckeye "<request>" [--path DIR] [--dry-run] [--answer]   device writes the duckeye
+#                                                     command; run as argv, never a shell string
 #   ttt models [--all]                              models loaded (--all = installed)
 #   ttt status                                      device + woollama health
 #   ttt unlock                                      unlock /data after a reboot
@@ -297,16 +299,19 @@ ensure_loaded() {
   return 1
 }
 
-usage() { sed -n '2,58p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,60p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 [ $# -eq 0 ] && usage 1
 cmd="$1"; shift
 
 # collect optional flags
 PATH_ARG="$PWD"; SMART=0; TRANSPARENT=0; OUT_ARG=""; PX_ARG=""; FILE_ARG=""; ALL=0; ENGINE_ARG=""; MODEL_ARG=""; STAMPS=0; ARGS=()
-ERRORS=0; N_ARG=""; POST_ARG=""; SESSION_ARG=""; VOICE_ARG=""; LANG_ARG=""; PLAY=0; SECS_ARG=""; DIALOG=0; TEXT_ARG=""; TEMPLATE_ARG=""; FULL=0
+ERRORS=0; N_ARG=""; POST_ARG=""; SESSION_ARG=""; VOICE_ARG=""; LANG_ARG=""; PLAY=0; SECS_ARG=""; DIALOG=0; TEXT_ARG=""; TEMPLATE_ARG=""; FULL=0; DRYRUN=0; ANSWER=0; ALLOWWHERE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dialog) DIALOG=1; shift;;
+    --dry-run) DRYRUN=1; shift;;
+    --answer) ANSWER=1; shift;;
+    --allow-where) ALLOWWHERE=1; shift;;
     --full) FULL=1; shift;;
     --text) TEXT_ARG="$2"; shift 2;;
     --text=*) TEXT_ARG="${1#*=}"; shift;;
@@ -1218,6 +1223,27 @@ for rank, i in enumerate(order, 1):
 if len(seen) < len(cands):
     print("(%d of %d ranked; the rest kept their original order)" % (len(seen), len(cands)), file=sys.stderr)
 PYEOF
+    ;;
+
+  duckeye)
+    # Ask the device for a duckeye command, then run it — as argv, never as a
+    # shell string. The model returns {"file", "args", "why"} and the args list
+    # goes straight to execve, so quoting stops being a security question: a
+    # selector containing ; or $(...) is just an argument duckeye will reject.
+    #
+    # The guards (flag allow-list, path containment, -w/--where withheld) live in
+    # the helper, not here, because there they can be tested with --plan and no
+    # device at all:  tiiny-duckeye.py --plan - <<< '{"file":…,"args":[…]}'
+    DQ="$(payload_text 'ttt duckeye "<request>" | FILE | -   [--path DIR] [--dry-run] [--answer]')"
+    DMODEL="$(loaded_model)"
+    if [ -z "$DMODEL" ]; then
+      echo "ttt duckeye: no chat model loaded — run 'ttt load fast'" >&2; exit 1
+    fi
+    DARGS=(--path "$PATH_ARG")
+    if [ "$DRYRUN" = 1 ]; then DARGS+=(--dry-run); fi
+    if [ "$ANSWER" = 1 ]; then DARGS+=(--answer); fi
+    if [ "$ALLOWWHERE" = 1 ]; then DARGS+=(--allow-where); fi
+    TIINY_ROUTE="$DMODEL" TIINY_IP="$IP" "$PY" "$HERE/tiiny-duckeye.py" "$DQ" "${DARGS[@]}"
     ;;
 
   prompt|dialog)

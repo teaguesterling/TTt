@@ -192,6 +192,46 @@ Drives the device model through squackit's MCP tools against a directory.
 Invoked by `ttt ask`; usable directly. Honours `TIINY_ROUTE` to name a device
 model id (`default` = whatever is loaded).
 
+## `tiiny-duckeye.py` — the device writes a duckeye command
+
+Invoked by `ttt duckeye`; usable directly. Turns a plain-English request into
+one `duckeye` invocation and runs it. Honours `TIINY_ROUTE` and `DUCKEYE`.
+
+The model returns **JSON**, not a command line — `{"file", "args", "why"}` —
+and `args` is handed to `subprocess` as argv with `shell=False`. Nothing is
+interpolated into a shell string, so quoting stops being a security question:
+a selector containing `;` or `$(…)` is just an argument duckeye will reject.
+Unquoting model output correctly is the bug this avoids owning.
+
+Three guards sit on top of argv, because argv alone is not enough:
+
+- **A flag allow-list.** Only the read-only query surface is accepted. `-o`
+  writes files, `--init`/`--update` mutate the duckeye install, `-p` spawns a
+  pager that would hang a pipeline. An *unknown* flag is refused rather than
+  passed through, so a duckeye upgrade cannot silently widen what the model
+  can reach.
+- **`-w`/`--where` is withheld.** It is a raw SQL expression evaluated by
+  DuckDB — a far wider surface than a selector. `--allow-where` opts in.
+- **Path containment.** The chosen file must resolve inside `--path`. The
+  model picks from a listing we generate, but it can return anything, so the
+  answer is checked rather than trusted.
+
+`--dry-run` prints the command without running it, with **every token single
+quoted** — not just the ones a shell would mangle. A line where some arguments
+are quoted and others are bare leaves the reader deciding which is which;
+quoting all of them means the line pastes anywhere, and a value carrying a
+newline or a trailing space is visible rather than silently reshaping the
+output. The error messages quote the offending value for the same reason:
+`file` and `args` come from the model, and an unquoted string with a newline
+in it could forge a second line of diagnostics.
+
+`--plan FILE|-` skips the device entirely and feeds the JSON in directly,
+which is how the guards are tested: no NPU, no network, deterministic.
+
+A no-match (`-Q`/`-S`/`-s` exit 1) is a result, not a failure — under
+`--answer` the model is told the extract was empty so it can say the selector
+was wrong, rather than the command going silent.
+
 ## `tiiny-import-model.sh` — HuggingFace import
 
 Imports a model onto the device via the management API, encoding several

@@ -61,6 +61,7 @@ ttt music  "<description>" [--full]     text → music (a WAV, on the device)
 ttt rerank "<query>" <candidate> …      order candidates by relevance
 ttt prompt ["<text>"] [--template F]    ask the device; reads stdin, writes stdout
 ttt dialog ["<text>"]                   the same, in a zenity entry + answer window
+ttt duckeye "<request>" [--dry-run]     device writes a duckeye command, run as argv
 ttt load   <alias|ID>  /  ttt unload    aliases from ~/.config/ttt/models
 ttt models                              what's loaded right now
 ttt top                                 NPU budget + what's resident
