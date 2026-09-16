@@ -78,6 +78,29 @@ the NPU and evicts nothing. Voices are `F1`–`F5` and `M1`–`M5` (the OpenAI-s
 `voice` names are rejected), and 18 languages are supported, `auto` by default.
 `listen` records from the default microphone and hands the file to `asr`.
 
+**`music` previews first, then resumes.** `ttt music "<description>"` renders a
+short piece from a text description; `--seconds N` sets its length and `--full`
+continues that same generation to roughly three times as long. Both write a WAV;
+`--play` plays it. Reckon on **6–9 seconds of render per second of audio** — a
+5 s preview takes about 80 s, and `--full` about three minutes.
+
+Three things about this API are worth knowing before you poke at it directly:
+
+- **`/v1/music/generate/preview` is the route that works**, and
+  `config.preview_seconds` is what makes it work. Without that field it answers
+  `preview_seconds must be set for preview generation`.
+- **`/v1/music/generate/mp3` and `/wav` are in the device's OpenAPI and 404 at
+  the music service.** The bare-string error shape (`{"error":"Endpoint not
+  found"}`) is the service answering, not the gateway.
+- **Bare `/v1/music/generate` needs a session id from an earlier preview.**
+  Without one it fails in about three seconds with `SESSION_NOT_FOUND` — for a
+  session it just minted. `resume` needs the session id *and* the config.
+
+Everything the model takes goes inside `config`; a top-level `generation_type`
+is rejected as an extra input. And because a render outlives the bridge's 60 s
+cap, `ttt music` talks to `:8800` directly and refuses up front — before loading
+anything — if it can't find a direct route.
+
 **`rerank` is a prompt, not an endpoint.** The device has no rerank route, so
 this asks the resident chat model to order the candidates. Fine for a handful
 of strings; not a scoring function.

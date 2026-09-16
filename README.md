@@ -30,6 +30,7 @@ ttt ocr    <image>                      image → text
 ttt asr    <audio>                      speech → text (~6x real time)
 ttt say    "<text>" [--voice F1] [--play]   text → speech
 ttt listen [--seconds N]                microphone → text
+ttt music  "<description>" [--full]     text → music (a WAV, on the device)
 ttt rerank "<query>" <candidate> …      order candidates by relevance
 ttt prompt ["<text>"] [--template F]    ask the device; reads stdin, writes stdout
 ttt dialog ["<text>"]                   the same, in a zenity entry + answer window

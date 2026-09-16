@@ -30,6 +30,9 @@
 #   ttt say   "<text>" [--voice F1] [--play] [--out F]   text -> speech on the device
 #                                                     (reads stdin when given no argument)
 #   ttt listen [--seconds N] [--out F]              microphone -> text (records, then ASR)
+#   ttt music  "<description>" [--seconds N] [--full] [--play] [--out F]
+#                                                     text -> music, on the device
+#                                                     (~6-9s of render per second of audio)
 #   ttt rerank "<query>" <candidate> …              order candidates by relevance
 #                                                     (prompted; there is no rerank endpoint)
 #   ttt prompt ["<text>"] [--template FILE]         ask the device; text in, text out
@@ -191,6 +194,7 @@ resolve_model() {
     coder)          printf 'Qwen/Qwen3-Coder-30B-A3B-Instruct';;
     tts|voice)      printf 'Supertone/supertonic-3';;
     asr|speech)     printf 'Qwen/Qwen3-ASR-1.7B';;
+    music)          printf 'tencent/SongGeneration-v2-large';;
     embed)          printf 'Qwen/Qwen3-Embedding-0.6B';;
     *)              printf '%s' "$a";;
   esac
@@ -293,16 +297,17 @@ ensure_loaded() {
   return 1
 }
 
-usage() { sed -n '2,55p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,58p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 [ $# -eq 0 ] && usage 1
 cmd="$1"; shift
 
 # collect optional flags
 PATH_ARG="$PWD"; SMART=0; TRANSPARENT=0; OUT_ARG=""; PX_ARG=""; FILE_ARG=""; ALL=0; ENGINE_ARG=""; MODEL_ARG=""; STAMPS=0; ARGS=()
-ERRORS=0; N_ARG=""; POST_ARG=""; SESSION_ARG=""; VOICE_ARG=""; LANG_ARG=""; PLAY=0; SECS_ARG=""; DIALOG=0; TEXT_ARG=""; TEMPLATE_ARG=""
+ERRORS=0; N_ARG=""; POST_ARG=""; SESSION_ARG=""; VOICE_ARG=""; LANG_ARG=""; PLAY=0; SECS_ARG=""; DIALOG=0; TEXT_ARG=""; TEMPLATE_ARG=""; FULL=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dialog) DIALOG=1; shift;;
+    --full) FULL=1; shift;;
     --text) TEXT_ARG="$2"; shift 2;;
     --text=*) TEXT_ARG="${1#*=}"; shift;;
     --file=*) FILE_ARG="${1#*=}"; shift;;
@@ -903,7 +908,7 @@ print('loaded on device:' if r else 'no models loaded on the device')
   load)
     if [ -z "${ARGS[0]:-}" ]; then
       echo "usage: ttt load <alias|MODEL_ID>" >&2
-      echo "aliases: fast smart 35b small coder tts asr embed (override in $MODELS_CONF)" >&2
+      echo "aliases: fast smart 35b small coder tts asr music embed (override in $MODELS_CONF)" >&2
       exit 1
     fi
     MODEL="$(resolve_model "${ARGS[0]}")"
@@ -1027,6 +1032,113 @@ print(json.dumps({'model':sys.argv[1],'input':sys.argv[2],'voice':sys.argv[3],'l
       [ "$PLAY" = 1 ] && rm -f "$SAY_OUT"
     else
       echo "wrote $SAY_OUT" >&2
+    fi
+    ;;
+
+  music)
+    # Text to music. The route that works is generate/preview, and the field
+    # that makes it work is config.preview_seconds — without it the service
+    # answers "preview_seconds must be set", and the sibling routes mislead:
+    # /generate/mp3 and /generate/wav are in the OpenAPI and 404 at the service,
+    # and bare /generate answers SESSION_NOT_FOUND unless you hand it the
+    # session id of an earlier preview.
+    #
+    # So: preview first (fast, gives you something to hear), then --full
+    # resumes THAT session to the full length. Everything the model takes goes
+    # inside `config`; a top-level key is rejected as an extra input.
+    MUS_TEXT="$(payload_text 'ttt music "<description>" | FILE | -   [--seconds N] [--full] [--play] [--out FILE]')"
+    if [ -z "$MUS_TEXT" ]; then echo "ttt music: nothing to generate from" >&2; exit 1; fi
+    MUS_MODEL="$(resolve_model "${MODEL_ARG:-${TTT_MUSIC_MODEL:-music}}")"
+    MUS_SECS="${SECS_ARG:-10}"
+    MUS_OUT="${OUT_ARG:-}"
+    if [ -z "$MUS_OUT" ]; then MUS_OUT="$(mktemp -t ttt-music-XXXXXX.wav)"; TMP_MUS=1; else TMP_MUS=0; fi
+    # Resolve the route BEFORE loading anything: generation outlives the
+    # bridge's 60s response-header cap (networking.md), so this must talk to the
+    # model service DIRECTLY on :8800 — the same constraint `ttt logs` has. If
+    # there's no such route, say so while the NPU is still untouched rather than
+    # loading a 28% model and then refusing to use it.
+    if [ -n "${TIINY_IP:-}" ]; then MUS_BASE="http://$TIINY_IP:8800"
+    else
+      _ip="$("$PY" -c "
+import json,os
+try: print(json.load(open(os.path.expanduser('~/.tiiny/config.json'))).get('deviceAddress') or '')
+except Exception: print('')" 2>/dev/null || true)"
+      if [ -n "$_ip" ]; then MUS_BASE="http://$_ip:8800"; else MUS_BASE="http://$IP"; fi
+    fi
+    case "$MUS_BASE" in
+      *:8800) ;;
+      *) echo "ttt music: no direct route to the device — a render takes minutes and the" >&2
+         echo "       gateway cuts every request at 60s. Set TIINY_IP, or run 'tiiny scan'." >&2
+         exit 1;;
+    esac
+    ensure_service_model "$MUS_MODEL" || { echo "ttt music: $MUS_MODEL did not load" >&2; exit 1; }
+    echo "generating ${MUS_SECS}s (about $((MUS_SECS * 8))s of work)…" >&2
+    MUS_TEXT="$MUS_TEXT" MUS_MODEL="$MUS_MODEL" MUS_SECS="$MUS_SECS" MUS_OUT="$MUS_OUT" \
+    MUS_FULL="$FULL" MUS_BASE="$MUS_BASE" KEY="$KEY" "$PY" - <<'PYEOF'
+import base64, json, os, sys, urllib.request
+
+base = os.environ["MUS_BASE"]
+model, secs = os.environ["MUS_MODEL"], float(os.environ["MUS_SECS"])
+full = os.environ.get("MUS_FULL") == "1"
+cfg = {"caption": os.environ["MUS_TEXT"], "generation_type": "bgm",
+       "seconds_total": secs * 3 if full else secs, "preview_seconds": secs}
+
+def post(path, body, timeout=1800):
+    req = urllib.request.Request(base + path, method="POST", data=json.dumps(body).encode(),
+        headers={"Authorization": "Bearer " + os.environ["KEY"], "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", "replace")
+        try:
+            msg = json.loads(raw)
+            msg = (msg.get("error") or {}).get("message") if isinstance(msg.get("error"), dict) else msg.get("error")
+        except Exception:
+            msg = raw[:160]
+        if e.code == 502:
+            sys.exit("ttt music: device returned 502 — /data is probably locked. Run:  ttt unlock")
+        if e.code == 504 or not msg:
+            sys.exit("ttt music: HTTP %s with no detail from %s — a render takes minutes, so this "
+                     "is usually a proxy cutting the request short. Use a direct :8800 route "
+                     "(set TIINY_IP)." % (e.code, base))
+        sys.exit("ttt music: device HTTP %s — %s" % (e.code, msg))
+
+d = post("/v1/music/generate/preview", {"model": model, "config": cfg})
+if d.get("error"):
+    sys.exit("ttt music: %s" % d["error"])
+sid = d.get("session_id")
+
+if full and sid:
+    # resume needs BOTH the session and the config; with only the session it
+    # answers "config.lyrics, config.caption, config.instruction, or prompt
+    # field is required".
+    print("preview done (%.0fs); resuming to full length…" % (d.get("duration") or 0), file=sys.stderr)
+    r = post("/v1/music/generate/resume", {"model": model, "session_id": sid, "config": cfg})
+    if not r.get("error") and r.get("audio_data"):
+        d = r
+
+audio = d.get("audio_data")
+if not audio:
+    sys.exit("ttt music: the device returned no audio")
+raw = base64.b64decode(audio)
+open(os.environ["MUS_OUT"], "wb").write(raw)
+print("%.1fs, %s Hz, %s channels, %d bytes" % (d.get("duration") or 0, d.get("sample_rate"),
+                                               d.get("channels"), len(raw)), file=sys.stderr)
+PYEOF
+    if [ "$PLAY" = 1 ]; then
+      player=""
+      for p in paplay pw-play aplay ffplay; do command -v "$p" >/dev/null 2>&1 && { player="$p"; break; }; done
+      case "$player" in
+        "")     echo "ttt music: no audio player found (paplay, pw-play, aplay or ffplay)" >&2;;
+        ffplay) ffplay -autoexit -nodisp -loglevel error "$MUS_OUT" ;;
+        *)      "$player" "$MUS_OUT" ;;
+      esac
+    fi
+    if [ "$TMP_MUS" = 1 ]; then
+      if [ "$PLAY" = 1 ]; then rm -f "$MUS_OUT"; else echo "$MUS_OUT"; fi
+    else
+      echo "wrote $MUS_OUT" >&2
     fi
     ;;
 
