@@ -280,6 +280,25 @@ payload_file() {                        # payload_file "<usage line>" -> a path 
 # does a model id reason? (Thinking route, or the 35B which always reasons)
 is_thinking() { case "$1" in *Thinking*|*35B*|*35b*) return 0;; *) return 1;; esac; }
 
+# Can we hand off to the vendor CLI? It schedules loads properly and prints its
+# own progress, so it is preferred — but it opens /dev/tty and dies with
+#   could not open a new TTY: open /dev/tty: no such device or address
+# whenever there isn't one: under cron, a hotkey, a pipeline, or any script.
+# That is most of what this CLI is for, so test the terminal, not just the
+# binary. Call sites must also treat a failure as non-fatal and fall through to
+# the API path — `exec` made that impossible, which turned "prefer the CLI" into
+# "require the CLI".
+#
+# The /dev/tty probe runs in a subshell with the subshell's OWN stderr closed:
+# bash reports a failed redirection itself, on this line, BEFORE the 2>/dev/null
+# on the inner command can apply — so the naive spelling prints
+#   ttt: line NNN: /dev/tty: No such device or address
+# on every non-interactive load/unload, which is the noise this removes.
+have_vendor_cli() {
+  command -v tiiny >/dev/null 2>&1 || return 1
+  ( exec 2>/dev/null; : >/dev/tty ) || return 1
+}
+
 # ensure a specific model is the resident chat model (stopping other chat models;
 # the device serves one chat model at a time). Returns non-zero if it never loads.
 ensure_loaded() {
@@ -898,13 +917,19 @@ print('loaded on device:' if r else 'no models loaded on the device')
     # Proxies the vendor CLI, which already does this well; the API path is the
     # fallback for hosts without it.
     if [ "${ARGS[0]:-}" = "--all" ] || [ "$ALL" = 1 ]; then
-      if command -v tiiny >/dev/null 2>&1; then exec tiiny unload --all -y; fi
+      if have_vendor_cli; then
+        if tiiny unload --all -y; then exit 0; fi
+        echo "note: the tiiny CLI failed — using the API instead" >&2
+      fi
       curl -s -m 60 -X POST "${MGMT}/models/unload_all" -H "Authorization: Bearer $KEY" >/dev/null
       echo "unloaded all models"; exit 0
     fi
     if [ -z "${ARGS[0]:-}" ]; then echo "usage: ttt unload <alias|MODEL_ID> | --all" >&2; exit 1; fi
     MODEL="$(resolve_model "${ARGS[0]}")"
-    if command -v tiiny >/dev/null 2>&1; then exec tiiny unload "$MODEL" -y; fi
+    if have_vendor_cli; then
+      if tiiny unload "$MODEL" -y; then exit 0; fi
+      echo "note: the tiiny CLI failed — using the API instead" >&2
+    fi
     curl -s -m 60 -X POST "${MGMT}/models/$(printf '%s' "$MODEL" | sed 's#/#%2F#g')/stop" \
       -H "Authorization: Bearer $KEY" >/dev/null
     echo "unloaded: $MODEL"
@@ -919,11 +944,13 @@ print('loaded on device:' if r else 'no models loaded on the device')
     MODEL="$(resolve_model "${ARGS[0]}")"
     cur="$(loaded_model)"
     if [ "$cur" = "$MODEL" ]; then echo "already loaded: $MODEL"; exit 0; fi
-    # The vendor CLI schedules this properly (and prints its own progress), so
-    # prefer it; the API path below runs where it isn't installed.
-    if command -v tiiny >/dev/null 2>&1; then
+    # Prefer the vendor CLI, but only when it can actually run, and never
+    # fatally — see have_vendor_cli. The API path below is the FALLBACK, not
+    # merely the no-CLI-installed path.
+    if have_vendor_cli; then
       echo "loading $MODEL via the tiiny CLI…" >&2
-      exec tiiny load "$MODEL"
+      if tiiny load "$MODEL"; then exit 0; fi
+      echo "note: the tiiny CLI failed — falling back to the API" >&2
     fi
     echo "loading $MODEL (stopping others; this can take 30-60s)…" >&2
     running=$(curl -s -m 10 "${MGMT}/models/running" -H "Authorization: Bearer $KEY" \
