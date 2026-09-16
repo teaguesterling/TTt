@@ -1,0 +1,73 @@
+site_name: Teague's Tiiny Tools
+site_description: >-
+  Unofficial tools and field notes for the Tiiny Pocket — a command-line
+  client, device API helpers, and the recipe for running the desktop app on Linux.
+site_url: https://ttt.readthedocs.io/
+repo_url: https://github.com/teaguesterling/TTt
+repo_name: teaguesterling/TTt
+edit_uri: edit/main/docs/
+docs_dir: docs
+copyright: MIT — Teague Sterling
+
+theme:
+  name: material
+  icon:
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+
+nav:
+  - Home: index.md
+  - Setting up:
+      - From scratch: from-scratch.md
+      - Running the desktop app on Linux: linux-desktop.md
+      - Fronting the device with woollama: woollama.md
+  - When it breaks:
+      - Troubleshooting: troubleshooting.md
+      - Networking: networking.md
+      - Embedder watchdog: embedder-watchdog.md
+  - Reference:
+      - Architecture: architecture.md
+      - Utilities: utilities.md
+      - APIs: apis.md
+      - Model service API: device-api.md
+      - Model import API: model-import-api.md
+  - Notes:
+      - Where Tiiny fits: where-tiiny-fits.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - pymdownx.details
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - toc:
+      permalink: true
+
+plugins:
+  - search

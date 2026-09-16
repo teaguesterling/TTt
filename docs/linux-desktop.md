@@ -42,7 +42,7 @@ any similar app would hit both:
 | `wine-sio-udp-netreset` | Go ≥ 1.23 calls `WSAIoctl(SIO_UDP_NETRESET)` on every UDP socket and treats failure as fatal. Wine doesn't implement it, so pcsvr cannot open **a single UDP socket**: no device discovery, no DNS. |
 | `wine-flsgetvalue2` | Edge/WebView2 imports `FlsGetValue2` (Windows 11). Without it `msedgewebview2.exe` exits 13 **silently** and no Tauri-based agent starts. |
 
-Both patches and the build recipe are in [`../wine/README.md`](../wine/README.md).
+Both patches and the build recipe are in [`../wine/README.md`](https://github.com/teaguesterling/TTt/blob/main/wine/README.md).
 It builds into `~/.local/opt/wine-patched` and leaves the system Wine alone.
 Budget about 1.8 GB and a long compile.
 

@@ -109,8 +109,8 @@ woollamad needs the device token in its environment (`api_key_env`). Without
 it, the daemon still starts and still listens — then every chat request 400s
 and the residency query 401s, which reads like a config error and isn't. Start
 it through a wrapper that fetches the key and refuses to start on a 401; see
-[`../bin/woollamad-run.sh`](../bin/woollamad-run.sh) and
-[`../deploy/woollamad.service`](../deploy/woollamad.service).
+[`../bin/woollamad-run.sh`](https://github.com/teaguesterling/TTt/blob/main/bin/woollamad-run.sh) and
+[`../deploy/woollamad.service`](https://github.com/teaguesterling/TTt/blob/main/deploy/woollamad.service).
 
 ```bash
 cargo install woollama-server

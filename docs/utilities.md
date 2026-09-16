@@ -68,7 +68,7 @@ ttt unlock                                       unlock /data after a reboot
 `~/.config/ttt/models` (`alias = model id`), then through built-ins (`fast`,
 `smart`, `35b`, `small`, `coder`, `tts`, `asr`, `embed`), then pass anything
 else through as a literal id. See
-[`../deploy/ttt.models.example`](../deploy/ttt.models.example). `load` and
+[`../deploy/ttt.models.example`](https://github.com/teaguesterling/TTt/blob/main/deploy/ttt.models.example). `load` and
 `unload` hand off to the vendor `tiiny` CLI when it is installed, and use the
 API when it isn't.
 
@@ -139,7 +139,7 @@ window for the answer, for hotkeys and launchers. It still prints the answer to
 stdout, so it can sit in a pipeline too. Without zenity or a display it says so
 and falls back to text rather than failing.
 
-[`examples/voice-code-query.sh`](../examples/voice-code-query.sh) wires the
+[`examples/voice-code-query.sh`](https://github.com/teaguesterling/TTt/blob/main/examples/voice-code-query.sh) wires the
 whole chain together — microphone → selector → `duckeye -Q` retrieval →
 summary → speech — as five pipes and nothing else.
 

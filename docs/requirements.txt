@@ -1,0 +1,4 @@
+# Docs-site build dependencies (used by ReadTheDocs and `mkdocs serve` locally).
+# Deliberately slim: building the docs needs the static-site generator and
+# nothing from bin/ — ttt is a bash script with no Python package to install.
+mkdocs-material>=9.5

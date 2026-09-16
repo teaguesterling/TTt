@@ -42,7 +42,7 @@ is cheap insurance on a host that may not always reach it.
 app bundle is an empty stub), and stock Wine cannot run it usefully. Two
 patches fix that, neither Tiiny-specific — see
 [`linux-desktop.md`](linux-desktop.md#1-patched-wine-for-pcsvr-only) for what
-each one fixes. Full build recipe: [`../wine/README.md`](../wine/README.md).
+each one fixes. Full build recipe: [`../wine/README.md`](https://github.com/teaguesterling/TTt/blob/main/wine/README.md).
 It builds into `~/.local/opt/wine-patched` and leaves the system Wine alone;
 the launchers auto-detect it and fall back to system `wine` if absent.
 
@@ -122,7 +122,7 @@ Order matters: pcsvr must be up before the app, which dials it on
 `127.0.0.1:60000` and depends on it for the device token.
 
 Set `TIINY_HOME` / `TIINY_NATIVE_BUILD` if your layout differs from the
-defaults in [`../launcher/README.md`](../launcher/README.md#paths).
+defaults in [`../launcher/README.md`](https://github.com/teaguesterling/TTt/blob/main/launcher/README.md#paths).
 
 ## 8. Optional: the woollama router
 
@@ -146,7 +146,7 @@ install -Dm644 deploy/tiiny-device-watch.service ~/.config/systemd/user/
 systemctl --user daemon-reload && systemctl --user enable --now tiiny-device-watch
 ```
 
-See [`../deploy/README.md`](../deploy/README.md) — especially the DEVICE × PATH
+See [`../deploy/README.md`](https://github.com/teaguesterling/TTt/blob/main/deploy/README.md) — especially the DEVICE × PATH
 table, which is what tells a dead device apart from a dead bridge.
 
 ---
@@ -164,7 +164,7 @@ export TIINY_AUTH_KEY=...            # no pcsvr here to read auth_data from
 
 Then steps 8 and 9 if that host should route inference or watch the device.
 `TIINY_IP` is mandatory for the watcher on a bridged host — see
-[`../deploy/README.md`](../deploy/README.md).
+[`../deploy/README.md`](https://github.com/teaguesterling/TTt/blob/main/deploy/README.md).
 
 **`tiiny-unlock.sh` is the one tool that cannot be made portable**: it needs the
 device serial *and* key from pcsvr's `auth_data`, so it only runs where pcsvr

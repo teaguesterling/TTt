@@ -118,7 +118,7 @@ the app bundle is an empty stub. It needs `wine-11.14` with two patches:
 | `wine-sio-udp-netreset` | Go ≥1.23 calls `WSAIoctl(SIO_UDP_NETRESET)` on every UDP socket and treats failure as fatal → pcsvr cannot open **a single UDP socket** → no discovery, no DNS |
 | `wine-flsgetvalue2` | WebView2 imports `FlsGetValue2` → `msedgewebview2.exe` exits 13 silently → no Tauri agent starts |
 
-Neither is Tiiny-specific. Build recipe in [`../wine/README.md`](../wine/README.md).
+Neither is Tiiny-specific. Build recipe in [`../wine/README.md`](https://github.com/teaguesterling/TTt/blob/main/wine/README.md).
 
 **This is why pcsvr is pinned to one machine.** Moving it to the always-on
 bridge host means reproducing a Wine source build on the box that already runs
