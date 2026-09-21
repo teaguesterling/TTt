@@ -7,9 +7,11 @@
 # text commands, a path for the file ones), "-" for stdin, or --text/--file to
 # say it explicitly. With no argument, a piped stdin is read anyway.
 #
-#   ttt ask  "<question>" | FILE | -  [--path DIR] [--smart]   agentic code-intelligence
+#   ttt ask  "<question>" | FILE | -  [--smart]     ask the device a general question
+#                                                     (plain answer; the default mode)
+#            --code [DIR]                            ask about CODE in DIR (default: cwd)
 #                                                     (device drives squackit's MCP tools)
-#            --librarian [--topk N] [--raw]           answer from a tiibrarian corpus instead
+#            --librarian [--topk N] [--raw]          ask a tiibrarian corpus
 #                                                     (LOOSE: real retrieval, claims unchecked)
 #   ttt do   "<intent>"   [--path DIR]              sandboxed file task via lackpy
 #                                                     (fast; phrase as "return X")
@@ -301,6 +303,56 @@ have_vendor_cli() {
   ( exec 2>/dev/null; : >/dev/tty ) || return 1
 }
 
+# One chat round trip: device_chat "<text>" [<caller>] [<max_tokens>] -> answer.
+# `ttt prompt` and a general `ttt ask` are the same call with different framing,
+# and a second copy of it would be a second place for the 502 hint and the
+# timeout to drift. The caller name only shapes the error text, so a 502 still
+# names the command the user actually typed.
+device_chat() {
+  local text="$1" who="${2:-prompt}" maxtok="${3:-1200}" model
+  model="$(loaded_model)"
+  if [ -z "$model" ]; then
+    echo "ttt $who: no chat model loaded — run 'ttt load fast'" >&2; return 1
+  fi
+  FULL="$text" PMODEL="$model" IP="$IP" KEY="$KEY" WHO="$who" MAXTOK="$maxtok" "$PY" - <<'PYEOF'
+import json, os, sys, urllib.request
+who = os.environ["WHO"]
+body = {"model": os.environ["PMODEL"],
+        "messages": [{"role": "user", "content": os.environ["FULL"]}],
+        "max_tokens": int(os.environ["MAXTOK"]),
+        # Thinking OFF by default. A reasoning model spends the budget in
+        # reasoning_content and hands back content="" with finish_reason
+        # "length" — an empty answer shaped exactly like a successful one.
+        # Both spellings: the device has honoured each on different models.
+        "enable_thinking": False,
+        "chat_template_kwargs": {"enable_thinking": False}}
+req = urllib.request.Request("http://" + os.environ["IP"] + "/v1/chat/completions", method="POST",
+    headers={"Authorization": "Bearer " + os.environ["KEY"], "Content-Type": "application/json"},
+    data=json.dumps(body).encode())
+try:
+    d = json.loads(urllib.request.urlopen(req, timeout=300).read())
+except urllib.error.HTTPError as e:
+    if e.code == 502:
+        sys.exit("ttt %s: device returned 502 — /data is probably locked. Run:  ttt unlock" % who)
+    sys.exit("ttt %s: device HTTP %s" % (who, e.code))
+ch = (d.get("choices") or [{}])[0]
+msg = ch.get("message") or {}
+out = (msg.get("content") or "").strip()
+if out:
+    print(out)
+    raise SystemExit(0)
+# An empty answer must never leave here looking like an answer. Say which of the
+# two it was, because the fixes differ.
+fin = ch.get("finish_reason")
+think = (msg.get("reasoning_content") or "").strip()
+if think:
+    sys.exit("ttt %s: the model reasoned for the whole budget and returned no answer "
+             "(finish_reason=%s). It is a thinking model and ignored thinking-off: raise "
+             "the budget, or load an Instruct model with 'ttt load fast'." % (who, fin))
+sys.exit("ttt %s: the device returned an empty answer (finish_reason=%s)." % (who, fin))
+PYEOF
+}
+
 # `ttt ask --librarian` reads a DuckDB corpus, so it needs an interpreter with
 # duckdb — which $PY often is not: $PY only has to parse JSON, and on a host
 # with no venv beside the script it is the system python3. Probe for one that
@@ -345,14 +397,14 @@ ensure_loaded() {
   return 1
 }
 
-usage() { sed -n '2,62p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,64p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 [ $# -eq 0 ] && usage 1
 cmd="$1"; shift
 
 # collect optional flags
 PATH_ARG="$PWD"; SMART=0; TRANSPARENT=0; OUT_ARG=""; PX_ARG=""; FILE_ARG=""; ALL=0; ENGINE_ARG=""; MODEL_ARG=""; STAMPS=0; ARGS=()
 ERRORS=0; N_ARG=""; POST_ARG=""; SESSION_ARG=""; VOICE_ARG=""; LANG_ARG=""; PLAY=0; SECS_ARG=""; DIALOG=0; TEXT_ARG=""; TEMPLATE_ARG=""; FULL=0; DRYRUN=0; ANSWER=0; ALLOWWHERE=0
-LIBRARIAN=0; TOPK_ARG=""; RAW=0; CHARS_ARG=""; CORPUS_ARG=""
+LIBRARIAN=0; TOPK_ARG=""; RAW=0; CHARS_ARG=""; CORPUS_ARG=""; CODE=0; PATH_SET=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dialog) DIALOG=1; shift;;
@@ -381,7 +433,14 @@ while [ $# -gt 0 ]; do
     -n|--lines) N_ARG="$2"; shift 2;;
     --post) POST_ARG="$2"; shift 2;;
     --session) SESSION_ARG="$2"; shift 2;;
-    --path) PATH_ARG="$2"; shift 2;;
+    --path) PATH_ARG="$2"; PATH_SET=1; shift 2;;
+    # --code takes an OPTIONAL directory. Requiring one would tax the common
+    # case (the repo you are standing in), so a following argument is consumed
+    # only when it is an existing directory — a question is not, and a one-word
+    # question that happens to name a directory is not a real invocation.
+    --code) CODE=1
+            if [ -n "${2:-}" ] && [ -d "$2" ]; then PATH_ARG="$2"; PATH_SET=1; shift 2; else shift; fi;;
+    --code=*) CODE=1; PATH_ARG="${1#*=}"; PATH_SET=1; shift;;
     --smart) SMART=1; shift;;
     --transparent) TRANSPARENT=1; shift;;
     --out) OUT_ARG="$2"; shift 2;;
@@ -413,7 +472,7 @@ fi
 
 case "$cmd" in
   ask)
-    ASK_Q="$(payload_text 'ttt ask "<question>" | FILE | -   [--path DIR] [--smart] [--librarian]')"
+    ASK_Q="$(payload_text 'ttt ask "<question>" | FILE | -   [--code [DIR]] [--librarian] [--smart]')"
     ARGS=("$ASK_Q")
     # --librarian answers from a tiibrarian corpus instead of from code. LOOSE:
     # the retrieval is exact (NPU embeddings, two-stage vector search) but the
@@ -438,8 +497,18 @@ case "$cmd" in
       TIINY_ROUTE="$(loaded_model)" TIINY_IP="$IP" TIINY_AUTH_KEY="$KEY" \
         exec "$LPY" "$HERE/tiiny-librarian.py" "$ASK_Q" "${LARGS[@]}"
     fi
-    ROUTE="default"; [ "$SMART" = 1 ] && ROUTE="tiiny/Qwen3-Thinking"  # informational; device serves loaded model
-    TIINY_ROUTE="$ROUTE" "$PY" "$HERE/tiiny-ask.py" "${ARGS[0]}" --path "$PATH_ARG"
+    # --code, or an explicit --path (which in `ask` only ever meant code), drives
+    # squackit's MCP tools over a directory. Without either, `ask` is a plain
+    # question to the device: the general case, and now the default.
+    #
+    # `exit $?` rather than `exec`: nothing needs to follow it, and falling
+    # through to the general path would answer the same question twice.
+    if [ "$CODE" = 1 ] || [ "$PATH_SET" = 1 ]; then
+      ROUTE="default"; [ "$SMART" = 1 ] && ROUTE="tiiny/Qwen3-Thinking"  # informational; device serves loaded model
+      TIINY_ROUTE="$ROUTE" "$PY" "$HERE/tiiny-ask.py" "$ASK_Q" --path "$PATH_ARG"
+      exit $?
+    fi
+    device_chat "$ASK_Q" "ask"
     ;;
 
   do)
@@ -1378,22 +1447,9 @@ PYEOF
     if [ -z "$PMODEL" ]; then
       echo "ttt prompt: no chat model loaded — run 'ttt load fast'" >&2; exit 1
     fi
-    ANSWER="$(FULL="$FULL" PMODEL="$PMODEL" IP="$IP" KEY="$KEY" "$PY" - <<'PYEOF'
-import json, os, sys, urllib.request
-body = {"model": os.environ["PMODEL"],
-        "messages": [{"role": "user", "content": os.environ["FULL"]}], "max_tokens": 1200}
-req = urllib.request.Request("http://" + os.environ["IP"] + "/v1/chat/completions", method="POST",
-    headers={"Authorization": "Bearer " + os.environ["KEY"], "Content-Type": "application/json"},
-    data=json.dumps(body).encode())
-try:
-    d = json.loads(urllib.request.urlopen(req, timeout=300).read())
-except urllib.error.HTTPError as e:
-    if e.code == 502:
-        sys.exit("ttt prompt: device returned 502 — /data is probably locked. Run:  ttt unlock")
-    sys.exit("ttt prompt: device HTTP %s" % e.code)
-print((d["choices"][0]["message"]["content"] or "").strip())
-PYEOF
-)"
+    # Same round trip as a general `ttt ask` — see device_chat, which also
+    # refuses to pass off an empty reply from a thinking model as an answer.
+    ANSWER="$(device_chat "$FULL" "$cmd")" || exit 1
     if [ "$GUI" = 1 ]; then
       printf '%s' "$ANSWER" | zenity --text-info --title="ttt — $PMODEL" --width=760 --height=520 2>/dev/null || printf '%s\n' "$ANSWER"
     else

@@ -22,7 +22,8 @@ prompts, generate images, embed text, OCR a screenshot, swap the loaded model,
 and check what the device is doing.
 
 ```
-ttt ask    "<question>" [--path DIR]    agentic code intelligence
+ttt ask    "<question>"                 ask the device anything (the default)
+ttt ask    --code [DIR] "<question>"    agentic code intelligence over DIR
 ttt ask    --librarian "<question>"     answer from a tiibrarian corpus (loose)
 ttt code   "<prompt>"                   direct coding
 ttt image  "<prompt>" [--out F]         image generation

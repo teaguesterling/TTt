@@ -39,7 +39,9 @@ The main entry point. Offloads real work to the device instead of spending
 cloud tokens.
 
 ```
-ttt ask    "<question>" [--path DIR] [--smart]   agentic code-intelligence
+ttt ask    "<question>" [--smart]                ask the device (general; default)
+ttt ask    --code [DIR] "<question>"             agentic code-intelligence
+ttt ask    --librarian "<question>" [--raw]      answer from a tiibrarian corpus
 ttt do     "<intent>"   [--path DIR]             sandboxed file task via lackpy
 ttt code   "<prompt>"   [--smart]                direct coding via woollama
 ttt review <file>       [--smart]                first-pass code review
@@ -189,8 +191,16 @@ single most time-wasting failure mode on this platform.
 ## `tiiny-ask.py` — one-shot agentic question
 
 Drives the device model through squackit's MCP tools against a directory.
-Invoked by `ttt ask`; usable directly. Honours `TIINY_ROUTE` to name a device
-model id (`default` = whatever is loaded).
+Invoked by `ttt ask --code`; usable directly. Honours `TIINY_ROUTE` to name a
+device model id (`default` = whatever is loaded).
+
+`ask` is general by default: a bare `ttt ask "<question>"` is a plain question
+to the device, and code intelligence is the `--code` mode rather than the
+default. `--code` takes an optional directory — bare `--code` means the current
+one, and a following argument is consumed only when it is an existing
+directory, so `ttt ask --code "where do we parse flags"` still reads as a
+question. An explicit `--path DIR` also selects code mode, since in `ask` it
+never meant anything else.
 
 ## `tiiny-librarian.py` — answer from a corpus (loose)
 
