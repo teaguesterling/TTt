@@ -1354,7 +1354,13 @@ prompt = ("Rank these candidates by how well they answer the query.\n"
           "Reply with ONLY the numbers, best first, comma-separated. No words.\n\n"
           "Query: %s\n\nCandidates:\n%s" % (os.environ["RQ"], listing))
 body = {"model": os.environ["RMODEL"], "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 64, "temperature": 0}
+        "max_tokens": 64, "temperature": 0,
+        # Thinking off: with 64 tokens a reasoning model spends the lot in
+        # reasoning_content and returns content="" — which parses to no digits
+        # and silently leaves the candidates in their ORIGINAL order. A rerank
+        # that quietly does not rerank is the worst shape of failure here.
+        "enable_thinking": False,
+        "chat_template_kwargs": {"enable_thinking": False}}
 req = urllib.request.Request("http://" + os.environ["IP"] + "/v1/chat/completions", method="POST",
     headers={"Authorization": "Bearer " + os.environ["KEY"], "Content-Type": "application/json"},
     data=json.dumps(body).encode())
@@ -1364,7 +1370,17 @@ except urllib.error.HTTPError as e:
     if e.code == 502:
         sys.exit("ttt rerank: device returned 502 — /data is probably locked. Run:  ttt unlock")
     sys.exit("ttt rerank: device HTTP %s" % e.code)
-text = (d["choices"][0]["message"]["content"] or "").strip()
+_ch = (d.get("choices") or [{}])[0]
+_msg = _ch.get("message") or {}
+text = (_msg.get("content") or "").strip()
+if not text:
+    # Say it rather than ranking nothing and printing the input back.
+    if (_msg.get("reasoning_content") or "").strip():
+        sys.exit("ttt rerank: the model reasoned for the whole budget and returned no "
+                 "ranking (finish_reason=%s). Load an Instruct model: ttt load fast"
+                 % _ch.get("finish_reason"))
+    sys.exit("ttt rerank: the device returned an empty ranking (finish_reason=%s)"
+             % _ch.get("finish_reason"))
 order, seen = [], set()
 for tok in text.replace("\n", ",").split(","):
     tok = "".join(ch for ch in tok if ch.isdigit())

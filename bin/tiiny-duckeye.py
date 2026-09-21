@@ -164,7 +164,19 @@ def chat(prompt, key, max_tokens, timeout=300):
             raise SystemExit("tiiny-duckeye: device returned 502 — /data is probably "
                              "locked. Run:  ttt unlock")
         raise SystemExit(f"tiiny-duckeye: device HTTP {e.code}")
-    return (d["choices"][0]["message"]["content"] or "").strip()
+    ch = (d.get("choices") or [{}])[0]
+    msg = ch.get("message") or {}
+    out = (msg.get("content") or "").strip()
+    if out:
+        return out
+    # Returning "" here would reach parse_plan as "model did not return JSON",
+    # which blames the wrong thing: the model returned nothing at all.
+    if (msg.get("reasoning_content") or "").strip():
+        raise SystemExit("tiiny-duckeye: the model reasoned for the whole budget and "
+                         "returned no command (finish_reason=%s). Load an Instruct model "
+                         "with 'ttt load fast'." % ch.get("finish_reason"))
+    raise SystemExit("tiiny-duckeye: the device returned an empty reply "
+                     "(finish_reason=%s)." % ch.get("finish_reason"))
 
 
 def parse_plan(text):

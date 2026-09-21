@@ -92,7 +92,20 @@ def chat(prompt, key, max_tokens=1200, timeout=300):
             raise SystemExit("tiiny-librarian: device returned 502 — /data is probably "
                              "locked. Run:  ttt unlock")
         raise SystemExit(f"tiiny-librarian: device HTTP {e.code}")
-    return (d["choices"][0]["message"]["content"] or "").strip()
+    ch = (d.get("choices") or [{}])[0]
+    msg = ch.get("message") or {}
+    out = (msg.get("content") or "").strip()
+    if out:
+        return out
+    # An empty answer must not be returned as one: it would print as a blank
+    # answer above a Sources list, which reads as "the corpus says nothing"
+    # rather than "the model produced nothing".
+    if (msg.get("reasoning_content") or "").strip():
+        raise SystemExit("tiiny-librarian: the model reasoned for the whole budget and "
+                         "returned no answer (finish_reason=%s). Raise the budget, or load "
+                         "an Instruct model with 'ttt load fast'." % ch.get("finish_reason"))
+    raise SystemExit("tiiny-librarian: the device returned an empty answer "
+                     "(finish_reason=%s)." % ch.get("finish_reason"))
 
 
 def passage(corpus, hit, chars):

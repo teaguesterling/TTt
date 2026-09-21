@@ -13,11 +13,37 @@ Design notes baked in from evaluation:
 - find_names returns NAMES; find returns FILE PATHS + ranges. Guidance included.
 - device serves one model at a time; ensure the target is loaded before use.
 """
-import argparse, asyncio, glob, json, os, sys, urllib.request
+import argparse, asyncio, glob, json, os, shutil, sys, urllib.request
 from fastmcp import Client
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SQUACKIT = os.path.join(HERE, ".venv/bin/squackit")
+
+
+def squackit_bin():
+    """Locate squackit, or say so in one line.
+
+    A venv beside this script is the workstation layout, and it is NOT what you
+    get on a fresh clone. When the binary is missing, fastmcp discovers it deep
+    inside an async connect and raises an ExceptionGroup whose last line is a
+    FileNotFoundError naming a path the caller never chose -- 25 lines that read
+    like a bug in this tool. The check belongs here, before the client opens.
+    """
+    env = os.environ.get("SQUACKIT")
+    if env:
+        if os.access(env, os.X_OK):
+            return env
+        raise SystemExit(f"tiiny-ask: SQUACKIT={env} is not an executable")
+    local = os.path.join(HERE, ".venv/bin/squackit")
+    if os.access(local, os.X_OK):
+        return local
+    found = shutil.which("squackit")
+    if found:
+        return found
+    raise SystemExit(
+        "tiiny-ask: squackit not found — it is what drives the code-intelligence\n"
+        "           tools, so `ttt ask --code` cannot run without it.\n"
+        f"           Looked at: $SQUACKIT, {local}, then PATH.\n"
+        "           Install squackit, or set SQUACKIT=/path/to/squackit.")
 # Device OpenAI endpoint (:80). Default is a NAME: *.tiiny is real DNS via the
 # bridge host's dnsmasq, proxied to the device over the USB /30 — so this survives
 # the device's DHCP drift and its roam-unstable radio, and works from any LAN host.
@@ -74,7 +100,7 @@ def chat(messages, tools, max_tokens):
 async def ask(question, path, quiet):
     # cwd (not env PWD) is what scopes squackit to the target repo — the stdio
     # transport otherwise spawns it in the parent's cwd and analyzes the wrong tree.
-    cfg = {"mcpServers": {"squackit": {"command": SQUACKIT, "args": ["mcp", "serve"],
+    cfg = {"mcpServers": {"squackit": {"command": squackit_bin(), "args": ["mcp", "serve"],
                                        "cwd": path,
                                        # quiet the MCP subprocess so its banner/INFO
                                        # logs don't pollute the companion's output

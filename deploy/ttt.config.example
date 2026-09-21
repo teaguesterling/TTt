@@ -19,3 +19,19 @@
 # AVOID google/gemma-4-26B-A4B-it — it is the smallest (12.5 GiB), but it does
 # not serve images here. Test any model you pick before relying on it.
 #TTT_OCR_MODEL=Qwen/Qwen3.6-35B-A3B-turbo
+
+# --- ask --librarian: answers from a tiibrarian corpus ------------------------
+# The corpus database. tiibrarian's built-in default is ~/corpus/<name>.duckdb,
+# which is almost certainly not where yours lives — set it here once rather than
+# passing --corpus every time. These are exported, so they reach the helper.
+#TIIBRARIAN_CORPUS=/path/to/survivorlibrary-testset.duckdb
+
+# The tiibrarian checkout (default ~/Projects/tiibrarian).
+#   https://github.com/teaguesterling/tiibrarian
+#TIIBRARIAN_HOME=/path/to/tiibrarian
+
+# Interpreter used for --librarian. It needs duckdb, which the interpreter ttt
+# otherwise runs often does not have — ttt probes $PY, ~/.local/share/venv, then
+# python3. Set this to pin one; it is then honoured or REFUSED BY NAME, never
+# silently swapped for another that happens to import duckdb.
+#TIIBRARIAN_PY=/path/to/venv/bin/python
