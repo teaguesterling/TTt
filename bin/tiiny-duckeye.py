@@ -280,6 +280,14 @@ def main():
     duckeye = os.environ.get("DUCKEYE") or shutil.which("duckeye")
     if not duckeye:
         raise SystemExit("tiiny-duckeye: duckeye is not on PATH (set DUCKEYE=/path/to/duckeye)")
+    # An explicit DUCKEYE is honoured or refused BY NAME. shutil.which already
+    # guarantees the PATH case is executable, but a wrong DUCKEYE sails past
+    # here and only fails inside subprocess.run -- as a FileNotFoundError
+    # traceback, which is the same "missing binary rendered as a stack trace"
+    # that tiiny-ask.py had for squackit. A dry-run never notices, because it
+    # only prints the command; the failure waits for a real execution.
+    if not os.access(duckeye, os.X_OK):
+        raise SystemExit(f"tiiny-duckeye: DUCKEYE={duckeye} is not an executable")
     argv = [duckeye] + args + [target]
 
     why = plan.get("why")

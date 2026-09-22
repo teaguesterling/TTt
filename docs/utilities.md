@@ -275,6 +275,16 @@ in it could forge a second line of diagnostics.
 `--plan FILE|-` skips the device entirely and feeds the JSON in directly,
 which is how the guards are tested: no NPU, no network, deterministic.
 
+```bash
+python3 tests/test_duckeye_guards.py     # exits non-zero if a guard stops holding
+```
+
+`tests/test_duckeye_guards.py` exercises every refusal, both path escapes, the
+bash round-trip of each quoted form, and the fact that `-o` never creates its
+file. It needs `duckeye` on PATH and skips loudly without it; it never needs the
+device. It is the only test in this repo — there is no framework and nothing
+else to run.
+
 A no-match (`-Q`/`-S`/`-s` exit 1) is a result, not a failure — under
 `--answer` the model is told the extract was empty so it can say the selector
 was wrong, rather than the command going silent.
