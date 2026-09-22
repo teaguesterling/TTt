@@ -8,6 +8,10 @@ auth_data/
 *.log
 *.pid
 wifi-trace*.csv
+# pluckit's cache, dropped in whatever directory `ttt ask --code` is pointed at.
+# Ignored by pluckit and squackit themselves; TTt creates one too, via squackit.
+.pluckit.duckdb
+.pluckit.duckdb.wal
 
 # --- Capture / diagnostic bundles ------------------------------------------
 tiiny-import-diag-*/
