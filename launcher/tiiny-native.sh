@@ -19,7 +19,7 @@ set -uo pipefail
 # back to TIINY_HOME only if this script is being run outside its own checkout.
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HERE="${TIINY_HOME:-$HOME/tiiny-tools}"
-NB="${TIINY_NATIVE_BUILD:-$HERE/linux-native-build-0.9.6}"
+NB="${TIINY_NATIVE_BUILD:-$HERE/linux-native-build-1.0.1}"
 NATIVE="$NB/run-tiinyos-linux.sh"
 
 # Prefer a sibling copy, fall back to TIINY_HOME.
@@ -71,7 +71,7 @@ except Exception: print("")' 2>/dev/null)
   done
   return 1
 }
-# RETIRED 2026-08-16 — see the banner in linux-native-build-0.9.6/run-tiinyos-linux.sh.
+# RETIRED 2026-08-16 — see the banner in linux-native-build-1.0.1/run-tiinyos-linux.sh.
 # *.tiiny is real DNS now (the bridge host's dnsmasq -> its Caddy -> device over
 # USB), so rewriting a private hosts file at every launch is both unnecessary
 # and actively wrong: it pinned the app to the device's DHCP WiFi address,

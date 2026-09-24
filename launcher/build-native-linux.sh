@@ -118,6 +118,58 @@ for d in "$TMP/node_modules/@img/"*; do
 done
 [ "$copied" -gt 0 ] || die "no @img packages were installed"
 
+# --- 4b. Repack app.asar — why step 4 on its own is NOT enough -----------------
+# Node resolves module paths against the asar HEADER INDEX, not the filesystem.
+# sharp's JS lives INSIDE app.asar and does require('@img/sharp-linux-x64'), so
+# dropping that package into app.asar.unpacked leaves NO header entry and the
+# require fails at runtime with:
+#     Could not load the "sharp" module using the linux-x64 runtime
+# ...while every file sits on disk the whole time. That is exactly how the old
+# file-existence checks below passed against a 1.0.1 build whose sharp could not
+# load. The archive has to be rebuilt with the Linux packages inside it.
+#
+# The unpack scope is DERIVED from the vendor tree, never hardcoded: it changes
+# between releases (1.0.1 added resources/desktop-agent-integrations), and
+# repacking with a stale scope silently relocates native modules.
+say "repacking app.asar so the Linux binaries land in the header index"
+command -v npx >/dev/null || die "npx is required to repack app.asar"
+SCOPE="$(cd "$SRC/resources/app.asar.unpacked" && python3 - <<'PY'
+import os
+scope = {}
+for name in sorted(os.listdir('.')):
+    if not os.path.isdir(name):
+        continue
+    kids = sorted(d for d in os.listdir(name) if os.path.isdir(os.path.join(name, d)))
+    # Emit the leaves: naming a parent like node_modules would unpack everything
+    # under it, which is not what electron-builder did.
+    if kids:
+        for k in kids:
+            scope["%s/%s" % (name, k)] = 1
+    else:
+        scope[name] = 1
+print(",".join(sorted(scope)))
+PY
+)"
+[ -n "$SCOPE" ] || die "could not derive the asar unpack scope from $SRC"
+echo "    unpack scope: $SCOPE"
+
+WORK="$(mktemp -d)"; trap 'rm -rf "$TMP" "$WORK"' EXIT
+npx --yes @electron/asar extract "$APP/resources/app.asar" "$WORK/unpack" \
+  || die "asar extract failed"
+mkdir -p "$WORK/unpack/node_modules/@img"
+for d in "$TMP/node_modules/@img/"*; do
+  [ -d "$d" ] || continue
+  rm -rf "$WORK/unpack/node_modules/@img/$(basename "$d")"
+  cp -a "$d" "$WORK/unpack/node_modules/@img/"
+done
+npx --yes @electron/asar pack "$WORK/unpack" "$WORK/app.asar" --unpack-dir "{$SCOPE}" \
+  || die "asar pack failed"
+[ -s "$WORK/app.asar" ] || die "repacked app.asar is empty"
+rm -rf "$APP/resources/app.asar" "$APP/resources/app.asar.unpacked"
+mv "$WORK/app.asar"          "$APP/resources/app.asar"
+mv "$WORK/app.asar.unpacked" "$APP/resources/app.asar.unpacked"
+echo "    app.asar $(stat -c %s "$APP/resources/app.asar") bytes"
+
 # --- 5. Rename the binary — NOT cosmetic ---------------------------------------
 # app.isPackaged keys off the executable NAME. Launched as plain `electron` the
 # app takes its dev-mode branch and every window dies with ERR_FILE_NOT_FOUND.
@@ -148,6 +200,12 @@ check "app.asar present"               "[ -s '$APP/resources/app.asar' ]"
 check "app.asar.unpacked present"      "[ -d '$APP/resources/app.asar.unpacked' ]"
 check "sharp linux binary"             "[ -f '$IMG/sharp-linux-x64/lib/sharp-linux-x64.node' ]"
 check "libvips linux binary"           "ls '$IMG'/sharp-libvips-linux-x64/lib/*.so* >/dev/null 2>&1"
+# The checks above only prove files exist ON DISK. Every one of them passed on a
+# build whose sharp could not load (see step 4b), so they cannot be the gate. The
+# two below are: one reads the header index Node actually resolves against, the
+# other does a real require() + render inside the app's own Electron runtime.
+check "sharp-linux-x64 in asar header" "npx --yes @electron/asar list '$APP/resources/app.asar' 2>/dev/null | grep -q '@img/sharp-linux-x64/lib/sharp-linux-x64.node'"
+check "sharp loads AND renders (functional)" "ELECTRON_RUN_AS_NODE=1 '$APP/tiinyos' -e \"require('$APP/resources/app.asar/node_modules/sharp')({create:{width:8,height:8,channels:3,background:{r:1,g:2,b:3}}}).png().toBuffer().then(function(b){process.exit(b.length>0?0:1)}).catch(function(){process.exit(1)})\" >/dev/null 2>&1"
 check "@img/colour (sharp 0.34 runtime dep)" "[ -d '$IMG/colour' ]"
 check "@img/colour pinned to $COLOUR_VER"    "[ \"\$(python3 -c \"import json;print(json.load(open('$IMG/colour/package.json'))['version'])\" 2>/dev/null)\" = '$COLOUR_VER' ]"
 check "windows sharp binaries retained" "[ -d '$IMG/sharp-win32-x64' ] || [ -d '$IMG/sharp-darwin-x64' ]"
