@@ -6,7 +6,7 @@ TiinyOS desktop app running.
 ## Conventions shared by every tool
 
 **Addressing — names, not IPs.** `*.tiiny` is real DNS: the bridge host's
-dnsmasq answers `address=/tiiny/10.0.0.2`, and its Caddy proxies to the device
+dnsmasq answers `address=/tiiny/<bridge>`, and its Caddy proxies to the device
 over the USB /30 (`172.20.19.89`). So the defaults are names. They survive the
 device's DHCP drift on WiFi (its address has moved before) and its
 roam-unstable radio, and they work from any host on the LAN.

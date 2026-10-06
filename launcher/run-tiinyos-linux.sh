@@ -17,7 +17,7 @@ LOG="${TIINY_LOG:-$HERE/tiinyos-linux.log}"
 # DNS SHIMS — RETIRED 2026-08-16, kept behind TIINY_DNS_SHIM=1
 # ============================================================================
 # *.tiiny is now REAL DNS: the bridge host's dnsmasq answers
-# `address=/tiiny/10.0.0.2` and its Caddy proxies to the device over the USB
+# `address=/tiiny/<bridge-host-ip>` and its Caddy proxies to the device over the USB
 # /30 (172.20.19.89). Verified from the workstation with no shim of any kind:
 # all *.tiiny names resolve and http://wifi.api.tiiny/... returns 200.
 #

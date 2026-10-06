@@ -4,7 +4,7 @@ Three paths exist. They are not equivalent, and the differences matter.
 
 ```
                     ┌─────────────────────────────────────────────────────┐
-  any LAN host ───► │ dnsmasq on the bridge host   address=/tiiny/10.0.0.2│
+  any LAN host ───► │ dnsmasq on the bridge host   address=/tiiny/<bridge>│
    *.tiiny          └────────────────┬────────────────────────────────────┘
                                      ▼
                     ┌─────────────────────────────────────────────────────┐
@@ -16,9 +16,15 @@ Three paths exist. They are not equivalent, and the differences matter.
                     │                 bridge-host side = .90              │
                     └─────────────────────────────────────────────────────┘
 
-  direct WiFi ─────► 10.0.0.50       DHCP, roam-unstable   (avoid)
+  direct WiFi ─────► <device-ip>     DHCP, roam-unstable   (avoid)
   direct USB  ─────► 172.20.19.89    bridge-host-local only
 ```
+
+`<bridge>` and `<device-ip>` are placeholders — substitute your bridge host's
+LAN address and the device's own. **`172.20.19.89` and `.90` are not
+placeholders:** the USB gadget's /30 is fixed, so those are literal. Captured
+command output further down keeps the real addresses it was recorded with; it
+is a record, not a template.
 
 ## The three paths
 
@@ -26,7 +32,7 @@ Three paths exist. They are not equivalent, and the differences matter.
 |---|---|---|---|
 | **Bridge (default)** | `*.tiiny` names | any LAN host | best — fixed /30, no roam |
 | **Direct USB** | `172.20.19.89` | only the host it's plugged into (the bridge host) | best, but local |
-| **Direct WiFi** | `10.0.0.50` | any LAN host | **poor** — DHCP drift + roam wedges |
+| **Direct WiFi** | `<device-ip>` | any LAN host | **poor** — DHCP drift + roam wedges |
 
 **Always prefer the names.** The WiFi address is DHCP-assigned — it has moved
 before — and sits behind a radio with a documented sticky-roam failure. Pinning
@@ -115,7 +121,7 @@ would need IP-forward + masquerade on the bridge host; deliberately not done.
 dnsmasq on the bridge host, in a `dnsmasq.d` config file:
 
 ```
-address=/tiiny/10.0.0.2
+address=/tiiny/<bridge>
 ```
 
 **dnsmasq's `address=/domain/` is a suffix match at any depth**, so this one line
@@ -125,7 +131,7 @@ all 16 names explicitly. The two look alike and behave differently; this is easy
 to get wrong.
 
 Clients need their resolver pointed at the bridge host
-(`/etc/systemd/resolved.conf.d/lan.conf`, `DNS=10.0.0.2`).
+(`/etc/systemd/resolved.conf.d/lan.conf`, `DNS=<bridge>`).
 
 ⚠️ **Known soft spot:** that drop-in sets `Domains=~lan`, which only *routes*
 `.lan` to the bridge host. `.tiiny` works because resolved queries both link

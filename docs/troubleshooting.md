@@ -16,7 +16,7 @@ look dead. Check in this order and you'll usually find it alive.
 
 ```bash
 tiiny models                                   # via names, through the bridge
-ping -c3 10.0.0.50                             # its WiFi address (DHCP-assigned)
+ping -c3 <device-ip>                           # its WiFi address (DHCP-assigned)
 ```
 
 Those are two independent paths. If either answers, the device is up and you have
@@ -25,13 +25,13 @@ a *path* problem, not a device problem.
 ### 2. Distinguish DNS from unreachable
 
 ```bash
-getent hosts auth.api.tiiny        # expect 10.0.0.2 (the bridge host)
-dig +short auth.api.tiiny @10.0.0.2
+getent hosts auth.api.tiiny        # expect <bridge> (the bridge host)
+dig +short auth.api.tiiny @<bridge>
 ```
 
 **Nothing resolving?** Your resolver isn't pointing at the bridge host. Check
 your resolver config (e.g. `/etc/systemd/resolved.conf.d/lan.conf`) for
-`DNS=10.0.0.2`. Names resolving but connections failing is a *different*
+`DNS=<bridge>`. Names resolving but connections failing is a *different*
 problem — go to step 3.
 
 Note `auth.api.tiiny` specifically: it's the two-label case that a single-label
@@ -43,7 +43,7 @@ wildcard is wrong.
 Check whether it's a WiFi roam rather than a dead device:
 
 ```bash
-ip neigh show 10.0.0.50            # FAILED = nothing answering at L2
+ip neigh show <device-ip>          # FAILED = nothing answering at L2
 ```
 
 **It self-heals in ~19 minutes.** Twice-observed, both times at that duration.
@@ -68,7 +68,7 @@ seconds:
 ```bash
 P=$(pgrep -f 'tiinyos-linux/tiinyos --no-sandbox' | head -1)
 tr '\0' '\n' < /proc/$P/environ | grep NSS_WRAPPER_HOSTS   # absent ⇒ this bug
-ss -tnp | grep 10.0.0.50                                   # zero conns ⇒ never tried
+ss -tnp | grep <device-ip>                                 # zero conns ⇒ never tried
 ```
 
 **Read the log text — it discriminates:**

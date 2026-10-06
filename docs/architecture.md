@@ -23,7 +23,7 @@ Most Tiiny "outages" are really a dependency earlier in this chain.
 └──────────────────────────────────────────────────────────────────┘
                               │
 ┌─ bridge-host (always-on) ───▼────────────────────────────────────┐
-│  dnsmasq   address=/tiiny/10.0.0.2   (suffix match, any depth)   │
+│  dnsmasq   address=/tiiny/<bridge>   (suffix match, any depth)   │
 │  Caddy :80  podman quadlet, Network=host                         │
 │      reverse_proxy ──► 172.20.19.89:80                           │
 │  USB gadget iface enx…  172.20.19.90/30                          │
@@ -74,7 +74,7 @@ Three things, none of which the device knows about:
 - **USB link** — plug the device in; the gadget enumerates automatically as
   `enx*` and the device serves the /30 by DHCP (the bridge host gets
   `172.20.19.90`). No host config needed.
-- **dnsmasq** — `address=/tiiny/10.0.0.2` makes every `*.tiiny` name resolve
+- **dnsmasq** — `address=/tiiny/<bridge>` makes every `*.tiiny` name resolve
   to the bridge host. One line, because dnsmasq matches the suffix at any
   depth.
 - **Caddy** — a site block for the 16 device vhost names, reverse-proxying to
@@ -88,10 +88,13 @@ anything: one probe proves link + boot + unlock + API in a single check.
 
 ### 4. Clients: point the resolver at the bridge host
 
-`/etc/systemd/resolved.conf.d/lan.conf` → `DNS=10.0.0.2`. Without this a
+`/etc/systemd/resolved.conf.d/lan.conf` → `DNS=<bridge>`. Without this a
 host resolves nothing under `.tiiny`, no matter how healthy the bridge is.
 
-Verify: `getent hosts auth.api.tiiny` → `10.0.0.2`.
+Verify: `getent hosts auth.api.tiiny` → `<bridge>`.
+
+`<bridge>` is the bridge host's own LAN address — substitute yours.
+`172.20.19.89/.90` are NOT placeholders: the USB /30 is fixed.
 
 ### 5. The workstation: pcsvr, then the app
 

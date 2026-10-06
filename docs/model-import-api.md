@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-14
 **Source:** reverse-engineered from the device management API (`:8800`) OpenAPI spec + live calls
-**Base:** `http://<device>:8800/api/v1/models/import` (device = `10.0.0.50` WiFi, DHCP-assigned, or `172.20.19.89` USB)
+**Base:** `http://<device>:8800/api/v1/models/import` (device = `<device-ip>` on WiFi, DHCP-assigned, or `172.20.19.89` over USB)
 **Auth:** `Authorization: Bearer <pcsvr auth_key>` (from `~/.local/share/tiiny-pcsvr/auth_data/<serial>.json`)
 
 ## The endpoints
@@ -96,7 +96,7 @@ cache..."). That is a **network** error, not a missing file.
 Reproducible inspect:
 ```bash
 KEY=$(python3 -c "import json,glob,os;print(json.load(open(glob.glob(os.path.expanduser('~/.local/share/tiiny-pcsvr/auth_data/*.json'))[0]))['auth_key'])")
-curl -s -X POST http://10.0.0.50:8800/api/v1/models/import/inspect \
+curl -s -X POST http://<device-ip>:8800/api/v1/models/import/inspect \
   -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
   -d '{"hf_url":"https://huggingface.co/<owner>/<repo>"}' | python3 -m json.tool
 ```
