@@ -157,14 +157,22 @@ auth_base() {
   if [ -n "${TIINY_IP:-}" ]; then printf 'http://%s/api/v1' "$TIINY_IP"
   else printf 'http://%s/api/v1' "${TIINY_AUTH_HOST:-auth.api.tiiny}"; fi
 }
+# -> exactly ONE token on one line. Callers interpolate this into a sentence,
+# so a stray newline does not just look wrong, it breaks the sentence in half.
+# It used to: `set -euo pipefail` is on, so an unreachable device failed the
+# PIPELINE even though the python fallback had already printed '?', and the
+# `|| printf` fired as well -- yielding "?\n?" and a bare second line reading
+# "? -- run 'ttt unlock'". Capture, keep the first line, default once.
 device_state() {
-  local hdr=()
+  local hdr=() out
   if [ -n "${TIINY_IP:-}" ]; then hdr=(-H "Host: ${TIINY_AUTH_HOST:-auth.api.tiiny}"); fi
-  curl -s -m 8 "${hdr[@]}" -X POST -H 'Content-Type: application/json' \
+  out="$(curl -s -m 8 "${hdr[@]}" -X POST -H 'Content-Type: application/json' \
     -d '{"auth_key":""}' "$(auth_base)/connect" 2>/dev/null | "$PY" -c "
 import json,sys
 try: print(json.load(sys.stdin).get('data_state','?'))
-except Exception: print('?')" 2>/dev/null || printf '?'
+except Exception: print('?')" 2>/dev/null)" || out=""
+  out="${out%%$'\n'*}"
+  printf '%s' "${out:-?}"
 }
 # Explain a 502 rather than printing the number. Locked /data is the usual
 # cause, and the device gives no other hint.
@@ -1096,19 +1104,32 @@ print('loaded on device:' if r else 'no models loaded on the device')
     ;;
 
   status)
+    # Exits non-zero if the device could not be reached, so a script can tell
+    # "healthy" from "not there" -- `ttt doctor` already did and this did not.
+    # woollama being down is NOT counted: it is optional, and most users have
+    # no router at all.
+    st_rc=0
     echo "device $IP:"
     st="$(device_state)"
     if [ "$st" = "unlocked" ]; then
       echo "  /data:  unlocked"
+    elif [ "$st" = "?" ]; then
+      echo "  /data:  unknown — the device did not answer"
+      st_rc=1
     else
       echo "  /data:  $st — run 'ttt unlock' (everything 502s until then)"
     fi
     curl -s -m 8 "${MGMT}/models/running" -H "Authorization: Bearer $KEY" \
       | "$PY" -c "import json,sys;d=json.load(sys.stdin);print('  models:',', '.join(d.get('running',[])) or '(none)')" 2>/dev/null \
-      || echo "  UNREACHABLE"
+      || { echo "  UNREACHABLE"; st_rc=1; }
     printf "woollama 127.0.0.1:47600: "
     curl -s -m 5 http://127.0.0.1:47600/v1/models -H "Authorization: Bearer local" >/dev/null 2>&1 \
       && echo "up" || echo "DOWN"
+    if [ "$st_rc" -ne 0 ]; then
+      echo "ttt: the device did not answer. If you have no *.tiiny bridge host," >&2
+      echo "       set TIINY_IP to its address (\`ttt doctor\` checks the whole path)." >&2
+    fi
+    exit "$st_rc"
     ;;
 
   unlock)
@@ -1583,7 +1604,12 @@ for e in reversed(items):
     esac
     printf '/data %-23s ' ""
     st="$(device_state)"
-    if [ "$st" = "unlocked" ]; then echo "unlocked"; else echo "$st — run 'ttt unlock'"; rc=1; fi
+    # '?' means the device never answered, which is not a lock problem -- telling
+    # someone to run `ttt unlock` against a device that is not there sends them
+    # after the wrong fault. The reachability line above already named it.
+    if [ "$st" = "unlocked" ]; then echo "unlocked"
+    elif [ "$st" = "?" ]; then echo "unknown — the device did not answer (see the line above)"; rc=1
+    else echo "$st — run 'ttt unlock'"; rc=1; fi
     printf 'management API %-14s ' ""
     mcode="$(curl -s -m 8 -o /dev/null -w '%{http_code}' "${MGMT}/models/running" -H "Authorization: Bearer $KEY" 2>/dev/null || echo 000)"
     if [ "$mcode" = "200" ]; then echo "yes (${MGMT})"; else echo "HTTP $mcode at ${MGMT} — :8800 is NOT proxied; use the p8800 vhost"; rc=1; fi

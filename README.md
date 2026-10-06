@@ -14,8 +14,20 @@ some of what is documented here is undocumented upstream and may change.
 ```bash
 git clone https://github.com/teaguesterling/TTt.git ~/tiiny-tools
 export TIINY_AUTH_KEY=...        # from pcsvr's auth_data/<serial>.json
-~/tiiny-tools/bin/ttt status
+export TIINY_IP=10.0.0.50        # your device's address — see the note below
+~/tiiny-tools/bin/ttt doctor     # checks every hop and names the one that failed
 ```
+
+`doctor` before `status`: it walks name → port 80 → `/data` → management API →
+NPU and tells you which hop broke, where `status` only reports the end state.
+
+**Set `TIINY_IP` unless you have already built the `*.tiiny` bridge.** Without
+it the default host is the *name* `api.tiiny`, which assumes a bridge host
+running dnsmasq and Caddy — worth building (it survives the device's DHCP drift
+and its roam-unstable radio, see [Networking](docs/networking.md)), but it is
+not where to start. `TIINY_IP` talks to the device directly and everything
+follows from it. `bin/discover.py` will find the address if you do not know it;
+over the USB link it is always `172.20.19.89`.
 
 `ttt` is the companion CLI: ask questions about a codebase, run one-shot
 prompts, generate images, embed text, OCR a screenshot, swap the loaded model,
