@@ -24,12 +24,19 @@ Two things it pins, both found 2026-10-05:
 import os
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TTT = os.path.join(HERE, os.pardir, "bin", "ttt")
 
+# An EMPTY $HOME, not the real one: `ttt` now falls back to the vendor CLI's
+# ~/.tiiny/config.json when a name does not resolve, so on a configured machine
+# this test would quietly reach the real device and assert nothing. The case
+# under test is a host with no bridge AND nothing configured — a clone and run.
+home = tempfile.TemporaryDirectory()
 env = dict(os.environ)
 env.update({
+    "HOME": home.name,
     "TIINY_HOST": "no-bridge.invalid",
     "TIINY_AUTH_HOST": "no-bridge.invalid",
     "TIINY_MGMT": "http://no-bridge.invalid/api/v1",

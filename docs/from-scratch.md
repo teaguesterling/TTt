@@ -2,12 +2,37 @@
 
 The authoritative build order. Everything needed is in this repo.
 
-**Only a desktop host needs all of this.** A headless host (an always-on bridge
-host, say) needs step 0 and `bin/` alone — no Wine, no prefix, no Electron.
-Skip to [Headless hosts](#headless-hosts).
+**Most people do not need most of this.** Steps 1–7 build the *desktop app* on
+Linux, which means Wine, a patched Wine, and a ~1.8 GB compile. If you only
+want the `ttt` command line — ask the device things, run models, OCR, speech —
+skip all of it:
+
+## Just the CLI
+
+```bash
+tiiny scan && tiiny connect && tiiny login      # the vendor CLI, native on Linux
+git clone https://github.com/teaguesterling/TTt.git ~/tiiny-tools
+~/tiiny-tools/bin/ttt doctor
+```
+
+The vendor CLI writes the device's address and your auth key to
+`~/.tiiny/config.json`, and `ttt` reads both from there. That is the whole
+setup: **no Wine, no `pcsvr`, no bridge host, no vendor `.exe`.** Then step 8
+if you want the woollama router, step 9 if you want the watcher.
+
+`tiiny-unlock.sh` is the one tool this does not get you — it needs the device
+serial from `pcsvr`'s `auth_data`, so it runs only where `pcsvr` does. `ttt
+unlock` does the same job through the API and works anywhere.
 
 Read [`architecture.md`](architecture.md) first if you want to know *why* the
 stack is shaped this way. This file is the *how*.
+
+---
+
+# The desktop app
+
+Steps 1–7 are only for running TiinyOS itself on Linux. Nothing below is
+needed for the CLI.
 
 ---
 
@@ -18,7 +43,7 @@ Two artifacts are **not** in this repo and cannot be — they're vendor binaries
 | | where from |
 |---|---|
 | `TiinyOS-<version>-setup.exe` | the vendor's Windows installer |
-| the device auth key | written by `pcsvr` into `~/.local/share/tiiny-pcsvr/auth_data/<serial>.json` once it has paired |
+| the device auth key | `tiiny login` writes it to `~/.tiiny/config.json`; `pcsvr` separately writes it to `~/.local/share/tiiny-pcsvr/auth_data/<serial>.json` once paired. Either satisfies `ttt`. |
 
 Everything else is either in this repo or built by the steps below.
 
@@ -101,11 +126,14 @@ The device's WiFi is roam-unstable — see [`networking.md`](networking.md). The
 stable path is the USB gadget on a fixed /30, bridged by an always-on bridge
 host:
 
-- point the host resolver at the bridge host (`DNS=10.0.0.2`), verify with
+- point the host resolver at the bridge host (`DNS=<bridge-host>`), verify with
   `getent hosts auth.api.tiiny`
-- on the bridge host, a dnsmasq `address=/tiiny/10.0.0.2` line answers the
+- on the bridge host, a dnsmasq `address=/tiiny/<bridge-host>` line answers the
   `.tiiny` names, and a Caddy `reverse_proxy` snippet forwards to the device
   over the USB /30
+
+`<bridge-host>` is that machine's own LAN address — substitute it; the examples
+elsewhere in these docs use a placeholder and are not a value to copy.
 
 Without a resolver pointing at the bridge host, nothing under `.tiiny` resolves
 no matter how healthy the bridge is — and the app reports that as a bare
@@ -124,10 +152,19 @@ Order matters: pcsvr must be up before the app, which dials it on
 Set `TIINY_HOME` / `TIINY_NATIVE_BUILD` if your layout differs from the
 defaults in [`../launcher/README.md`](https://github.com/teaguesterling/TTt/blob/main/launcher/README.md#paths).
 
+---
+
+# Optional services — any host
+
+Neither of these needs Wine or the desktop app; they are as useful on a
+CLI-only machine as on a desktop one.
+
 ## 8. Optional: the woollama router
 
 `woollamad` fronts the device with a queue and on-demand model loading, so
 callers get `503 + Retry-After` instead of wedging it.
+
+Needs a Rust toolchain (`rustup`), which nothing else here does.
 
 ```bash
 cargo install woollama-server            # >= 0.13.0
@@ -158,8 +195,8 @@ prefix, no Electron:
 
 ```bash
 git clone https://github.com/teaguesterling/TTt.git ~/tiiny-tools
-export TIINY_AUTH_KEY=...            # no pcsvr here to read auth_data from
-~/tiiny-tools/bin/ttt status
+export TIINY_AUTH_KEY=...            # or `tiiny login`, or pcsvr's auth_data
+~/tiiny-tools/bin/ttt doctor
 ```
 
 Then steps 8 and 9 if that host should route inference or watch the device.

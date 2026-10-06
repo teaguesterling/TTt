@@ -13,21 +13,32 @@ some of what is documented here is undocumented upstream and may change.
 
 ```bash
 git clone https://github.com/teaguesterling/TTt.git ~/tiiny-tools
-export TIINY_AUTH_KEY=...        # from pcsvr's auth_data/<serial>.json
-export TIINY_IP=10.0.0.50        # your device's address — see the note below
 ~/tiiny-tools/bin/ttt doctor     # checks every hop and names the one that failed
 ```
+
+**Nothing else to configure if you have used the vendor `tiiny` CLI.** It runs
+natively on Linux, and `tiiny scan && tiiny connect && tiiny login` writes both
+things `ttt` needs — the device's address and the auth key — to
+`~/.tiiny/config.json`. `ttt` reads them from there. No Wine, no `pcsvr`, no
+bridge host.
 
 `doctor` before `status`: it walks name → port 80 → `/data` → management API →
 NPU and tells you which hop broke, where `status` only reports the end state.
 
-**Set `TIINY_IP` unless you have already built the `*.tiiny` bridge.** Without
-it the default host is the *name* `api.tiiny`, which assumes a bridge host
-running dnsmasq and Caddy — worth building (it survives the device's DHCP drift
-and its roam-unstable radio, see [Networking](docs/networking.md)), but it is
-not where to start. `TIINY_IP` talks to the device directly and everything
-follows from it. `bin/discover.py` will find the address if you do not know it;
-over the USB link it is always `172.20.19.89`.
+Overrides, in the order `ttt` prefers them:
+
+| | |
+|---|---|
+| `TIINY_AUTH_KEY` | the key, explicitly |
+| `pcsvr`'s `auth_data/<serial>.json` | used when it exists (the desktop-app host) |
+| `~/.tiiny/config.json` | the vendor CLI's — `account.authKey`, `deviceAddress` |
+| `TIINY_IP` | talk straight to an address, skipping name resolution |
+
+The default host is the *name* `api.tiiny`, which assumes a bridge host running
+dnsmasq and Caddy. That is worth building eventually — it survives the device's
+DHCP drift and its roam-unstable radio, see [Networking](docs/networking.md) —
+but it is not where to start, and when the name does not resolve `ttt` falls
+back to the vendor config's address rather than failing.
 
 `ttt` is the companion CLI: ask questions about a codebase, run one-shot
 prompts, generate images, embed text, OCR a screenshot, swap the loaded model,
