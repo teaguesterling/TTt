@@ -94,12 +94,16 @@ Everything is environment-driven; see `deploy/tiiny-embedder-watchdog.env.exampl
 | `WD_FAILMAX` | `3` | Consecutive failures before declaring a wedge |
 | `WD_PROBE_TIMEOUT` | `12` | Per-probe timeout (s) |
 | `WD_STOP_ALL` | `1` | **1 = stop all models (the actual fix)**; 0 = only the target |
+| `WD_SETTLE` | `5` | Pause after stopping, before starting again (s) |
+| `WD_RECOVER_TRIES` | `25` | Health polls after the restart before giving up |
+| `WD_RECOVER_WAIT` | `6` | Seconds between those polls (so 25 × 6 ≈ 2½ min) |
 | `WD_COOLDOWN` | `120` | Minimum seconds between recovery attempts |
 | `WD_MAX_PER_HOUR` | `6` | Thrash guard — above this, log loudly and stop trying |
 | `WD_REQUIRE_MGMT` | `1` | **Only recover if the device itself still answers** (see below) |
 | `WD_MGMT_TIMEOUT` | `8` | Reachability-check timeout (s) |
 | `WD_DRY_RUN` | `0` | 1 = detect and log only |
 | `WD_HEARTBEAT` | `3600` | Seconds between summary lines |
+| `WD_LOG_FILE` | — | Extra log file to append to; unset means stdout only, which journald already captures |
 
 ### A wedged model is not the same as an unreachable device
 

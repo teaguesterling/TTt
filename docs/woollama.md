@@ -58,10 +58,10 @@ cargo install woollama-server        # ≥ 0.13.0; current release 0.16.x
 
 ## Configuration
 
-`inferencers.toml` — one chat route is the safe shape:
+`inferencers.toml` — two chat routes, because `ttt` addresses both by name:
 
 ```toml
-[inferencers.tiiny]
+[inferencers.tiiny]                             # the --smart route
 base_url            = "http://api.tiiny/v1"     # or http://<device-ip>:8800/v1
 management_url      = "http://api.tiiny"
 management_protocol = "device"   # /api/v1/models/{running,start,stop}
@@ -81,7 +81,18 @@ models = [
 
   [inferencers.tiiny.virtual]
   default = "Qwen/Qwen3.6-35B-A3B-turbo"   # what to load on a cold device
+
+[inferencers.tiiny-fast]                   # the default route
+# every key above repeated verbatim, `models` included; only the default differs
+
+  [inferencers.tiiny-fast.virtual]
+  default = "Qwen/Qwen3-30B-A3B-Instruct"  # fast, thinking off
 ```
+
+**Both names are required, not a preference.** `ttt code`, `ttt review` and
+`ttt judge` post to `tiiny-fast/default`, and to `tiiny/default` under
+`--smart`. A config defining only `tiiny` leaves plain `ttt code` with nothing
+to call — woollamad answers, but for a route that isn't there.
 
 Four settings worth understanding, each learned the hard way:
 
@@ -96,9 +107,12 @@ Four settings worth understanding, each learned the hard way:
 - **Leave `pool_max` unset.** It counts models, but the device's ceiling is NPU
   memory. Capping the count evicts a 0.7 GiB reranker to load a 0.9 GiB
   embedder that would have fitted alongside it.
-- **One chat route, not several.** `parallel` is enforced per route, so two
-  pooled routes against one device permit two in-flight requests — exactly the
-  concurrency that wedges it.
+- **Routes are not free, because `parallel` is enforced per route.** Two routes
+  against one device permit two in-flight requests — exactly the concurrency
+  that wedges the chat model. The pair above is safe only because `ttt` picks
+  one *per invocation*: run a `--smart` command and a plain one at the same
+  time and you have reintroduced the problem. So keep it to the two routes
+  `ttt` needs, and don't add a third.
 
 `virtual.default` only decides what to load when nothing eligible is resident;
 whichever chat model is already loaded serves the route.

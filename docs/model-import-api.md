@@ -172,8 +172,8 @@ completed: `event: done / status: completed`, model registered on-device as
   (the failed job wasn't registered resumable), but a **fresh `POST /import` reused the
   13.8 GB HF-xet cache** — toolkit stayed complete, model resumed from the 8.77 GB
   checkpoint. So on a roam-failure: just re-POST the same import; it continues, doesn't restart.
-- Time a retry into a good WiFi window (see `wifi-trace.sh` / `wifi-trace.csv`). Bad
-  roam windows lasted ~19 min; the good window sustained ~35 MiB/s and finished ~8 GB in minutes.
+- Time a retry into a good WiFi window. Bad roam windows lasted ~19 min; the
+  good window sustained ~35 MiB/s and finished ~8 GB in minutes.
 - Post-import there were ~23 GB of deletable download-cache residuals
   (`GET/DELETE /models/import/residuals`) — clean to reclaim space.
 

@@ -15,7 +15,7 @@ look dead. Check in this order and you'll usually find it alive.
 ### 1. Is it actually unreachable, or just unreachable *one way*?
 
 ```bash
-tiiny models                                   # via names, through the bridge
+ttt models                                     # via names, through the bridge
 ping -c3 <device-ip>                           # its WiFi address (DHCP-assigned)
 ```
 

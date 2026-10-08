@@ -25,14 +25,23 @@ bridge host.
 `doctor` before `status`: it walks name → port 80 → `/data` → management API →
 NPU and tells you which hop broke, where `status` only reports the end state.
 
-Overrides, in the order `ttt` prefers them:
+Overrides come in two independent kinds, so they have two precedences. The
+**auth key**, highest first:
 
 | | |
 |---|---|
 | `TIINY_AUTH_KEY` | the key, explicitly |
 | `pcsvr`'s `auth_data/<serial>.json` | used when it exists (the desktop-app host) |
-| `~/.tiiny/config.json` | the vendor CLI's — `account.authKey`, `deviceAddress` |
-| `TIINY_IP` | talk straight to an address, skipping name resolution |
+| `~/.tiiny/config.json` | the vendor CLI's `account.authKey` |
+
+And the **address**, which is resolved separately and is not an auth source at
+all:
+
+| | |
+|---|---|
+| `TIINY_IP` | checked first: talk straight to an address, skipping name resolution |
+| `TIINY_HOST`, else `api.tiiny` | the name, when it resolves |
+| `~/.tiiny/config.json` | the vendor CLI's `deviceAddress`, when the name does not |
 
 The default host is the *name* `api.tiiny`, which assumes a bridge host running
 dnsmasq and Caddy. That is worth building eventually — it survives the device's
@@ -48,7 +57,10 @@ and check what the device is doing.
 ttt ask    "<question>"                 ask the device anything (the default)
 ttt ask    --code [DIR] "<question>"    agentic code intelligence over DIR
 ttt ask    --librarian "<question>"     answer from a tiibrarian corpus (loose)
-ttt code   "<prompt>"                   direct coding
+ttt do     "<intent>" [--path DIR]      sandboxed file task (lackpy, local)
+ttt code   "<prompt>"                   direct coding, via woollama
+ttt review <file>                       first-pass code review, via woollama
+ttt judge  <rubric> <candidate>         grade a candidate against a rubric
 ttt image  "<prompt>" [--out F]         image generation
 ttt embed  "<text>" | --file F          local embeddings
 ttt ocr    <image>                      image → text
@@ -69,6 +81,10 @@ ttt logs   ["<text>"] [--errors]        the device's own service log
 ttt api    <PATH> [--post JSON]         anything the wrappers don't cover
 ttt unlock                              unlock /data after a reboot
 ```
+
+`code`, `review` and `judge` post to `127.0.0.1:47600`: they need a local
+woollama router ([docs/woollama.md](docs/woollama.md)). Everything else talks
+to the device.
 
 `load` and `unload` hand off to the vendor `tiiny` CLI when it's installed, and
 fall back to the API when it isn't. Aliases (`fast`, `smart`, `coder`, `tts`, …)

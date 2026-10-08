@@ -20,9 +20,11 @@ The vendor CLI writes the device's address and your auth key to
 setup: **no Wine, no `pcsvr`, no bridge host, no vendor `.exe`.** Then step 8
 if you want the woollama router, step 9 if you want the watcher.
 
-`tiiny-unlock.sh` is the one tool this does not get you — it needs the device
-serial from `pcsvr`'s `auth_data`, so it runs only where `pcsvr` does. `ttt
-unlock` does the same job through the API and works anywhere.
+`tiiny-unlock.sh` is the one tool this does not configure. It is not tied to
+`pcsvr` — it reads `TIINY_AUTH_KEY` first and only falls back to `pcsvr`'s
+`auth_data` — but unlike `ttt` it never reads `~/.tiiny/config.json`, so on a
+vendor-CLI-only host you have to export the key yourself. `ttt unlock` does the
+same job and finds the key the same way `ttt` does, so prefer it.
 
 Read [`architecture.md`](architecture.md) first if you want to know *why* the
 stack is shaped this way. This file is the *how*.
@@ -109,8 +111,8 @@ renderer while the JS runs fine. The durable answer is repackaging the same
 
 It fetches the matching Electron, copies the app payload out of the Wine
 install, installs the one native module that needs a Linux build, renames the
-binary, drops the launcher in, and verifies all ten results. Idempotent — re-run
-it to check or repair an existing tree.
+binary, drops the launcher in, and verifies all twelve results. Idempotent —
+re-run it to check or repair an existing tree.
 
 The three things it does that are not obvious, and that cost hours when done by
 hand, are detailed in
@@ -203,9 +205,11 @@ Then steps 8 and 9 if that host should route inference or watch the device.
 `TIINY_IP` is mandatory for the watcher on a bridged host — see
 [`../deploy/README.md`](https://github.com/teaguesterling/TTt/blob/main/deploy/README.md).
 
-**`tiiny-unlock.sh` is the one tool that cannot be made portable**: it needs the
-device serial *and* key from pcsvr's `auth_data`, so it only runs where pcsvr
-does.
+**`tiiny-unlock.sh` is the one tool that does not read the vendor config**: it
+takes `TIINY_AUTH_KEY` first and falls back to pcsvr's `auth_data`, so it runs
+anywhere the key is in the environment — but it will not pick one up from
+`~/.tiiny/config.json` the way `ttt` does. Use `ttt unlock` unless you need to
+script the unlock without the CLI.
 
 ---
 
@@ -231,7 +235,8 @@ does.
 [`troubleshooting.md`](troubleshooting.md) is ordered by what actually goes
 wrong. The two that catch everyone:
 
-- **everything 502s** → the device booted with `/data` locked. `tiiny-unlock.sh`.
-  There is no user-facing cue and it looks like a dead device.
+- **everything 502s** → the device booted with `/data` locked. `ttt unlock`, or
+  `bin/tiiny-unlock.sh` with `TIINY_AUTH_KEY` exported. There is no user-facing
+  cue and it looks like a dead device.
 - **bare `fetch failed`** → DNS, nearly always. The client logs the same string
   for "cannot resolve", "device off" and "connection refused".

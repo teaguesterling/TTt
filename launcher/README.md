@@ -51,8 +51,8 @@ that tree worth versioning, so it's kept here as the canonical copy and
 
 Fetches Electron 37.4.0, copies the app payload out of the Wine install,
 installs the Linux `sharp`, renames the binary, drops this launcher in the tree
-root, and verifies ten results. Idempotent — safe to re-run against an existing
-tree to check or repair it.
+root, and verifies twelve results. Idempotent — safe to re-run against an
+existing tree to check or repair it.
 
 Three non-obvious things it handles, each of which cost hours by hand:
 

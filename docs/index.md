@@ -13,12 +13,24 @@ some of what is documented here is undocumented upstream and may change.
 
 ```bash
 git clone https://github.com/teaguesterling/TTt.git ~/tiiny-tools
-export TIINY_AUTH_KEY=...        # from pcsvr's auth_data/<serial>.json
-~/tiiny-tools/bin/ttt status
+~/tiiny-tools/bin/ttt doctor     # checks every hop and names the one that failed
 ```
 
-If that prints device health, everything else on this site will work. If it
-prints a 502, the device booted with `/data` locked — run `ttt unlock`.
+**Nothing else to configure if you have used the vendor `tiiny` CLI.** It runs
+natively on Linux, and `tiiny scan && tiiny connect && tiiny login` writes both
+things `ttt` needs — the device's address and the auth key — to
+`~/.tiiny/config.json`. `ttt` reads them from there. No Wine, no `pcsvr`, no
+bridge host.
+
+`doctor` before `status`: it walks name → port 80 → `/data` → management API →
+NPU and tells you which hop broke, where `status` only reports the end state.
+
+If every check passes, everything else on this site will work. If `doctor`
+reports a 502, the device booted with `/data` locked — run `ttt unlock`.
+
+The overrides (`TIINY_AUTH_KEY`, `TIINY_IP`, `TIINY_HOST`) and the order `ttt`
+prefers them in are in
+[Utilities](utilities.md#conventions-shared-by-every-tool).
 
 ## The two things that will save you an hour
 
@@ -52,7 +64,10 @@ and check what the device is doing.
 ttt ask    "<question>"                 ask the device anything (the default)
 ttt ask    --code [DIR] "<question>"    agentic code intelligence over DIR
 ttt ask    --librarian "<question>"     answer from a tiibrarian corpus (loose)
-ttt code   "<prompt>"                   direct coding
+ttt do     "<intent>" [--path DIR]      sandboxed file task (lackpy, local)
+ttt code   "<prompt>"                   direct coding, via woollama
+ttt review <file>                       first-pass code review, via woollama
+ttt judge  <rubric> <candidate>         grade a candidate against a rubric
 ttt image  "<prompt>" [--out F]         image generation
 ttt embed  "<text>" | --file F          local embeddings
 ttt ocr    <image>                      image → text
@@ -73,6 +88,10 @@ ttt logs   ["<text>"] [--errors]        the device's own service log
 ttt api    <PATH> [--post JSON]         anything the wrappers don't cover
 ttt unlock                              unlock /data after a reboot
 ```
+
+`code`, `review` and `judge` post to `127.0.0.1:47600`: they need a local
+woollama router ([woollama.md](woollama.md)). Everything else talks to the
+device.
 
 Every command follows one payload rule: a bare argument is the payload (text
 for text commands, a path for file ones), `-` is stdin, and `--text` / `--file`

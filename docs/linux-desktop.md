@@ -158,8 +158,8 @@ pcsvr still runs under Wine even though the app doesn't, so these stay live:
 ## When it doesn't work
 
 - **Everything returns 502** → the device booted with `/data` locked. Unlock it
-  (`bin/tiiny-unlock.sh`). There is no user-facing cue, and it looks like a dead
-  device.
+  (`ttt unlock`, or `bin/tiiny-unlock.sh` with `TIINY_AUTH_KEY` exported). There
+  is no user-facing cue, and it looks like a dead device.
 - **A bare `fetch failed`** → name resolution, nearly always. The app logs the
   same string for "cannot resolve", "device off" and "connection refused".
 - **A white window** → you are on the Wine-hosted app, not the native build.

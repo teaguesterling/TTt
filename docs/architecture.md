@@ -55,11 +55,16 @@ The device boots with `/data` (LUKS2) **locked**. `docker.service` has
 returns **502** until it's unlocked.
 
 ```bash
-tiiny-unlock.sh      # POST /api/v1/account/unlock_with_auth_key
+ttt unlock           # POST /api/v1/account/unlock_with_auth_key
 ```
 
 Auth key only — no decryption password. **Any reboot needs this.** There is no
 user-facing cue; it looks broken rather than locked.
+
+Nothing in step 5 is required to get here: `ttt` finds the key in the
+environment or in the vendor CLI's `~/.tiiny/config.json`, so the unlock does
+not wait on `pcsvr`. On the `pcsvr` host, `bin/tiiny-unlock.sh` does the same
+thing from `auth_data` and is the way to script it without the CLI.
 
 ### 2. Device: containers start
 
@@ -77,7 +82,7 @@ Three things, none of which the device knows about:
 - **dnsmasq** — `address=/tiiny/<bridge>` makes every `*.tiiny` name resolve
   to the bridge host. One line, because dnsmasq matches the suffix at any
   depth.
-- **Caddy** — a site block for the 16 device vhost names, reverse-proxying to
+- **Caddy** — a site block for the 18 device vhost names, reverse-proxying to
   `172.20.19.89:80`. Names are listed explicitly because a **Caddy wildcard is
   single-label** and would miss `auth.api.tiiny`.
 
@@ -202,6 +207,10 @@ Anything caching residency must therefore treat its own view as a **hint that
 the device corrects**, load-balancer style — never as a ledger. This is exactly
 what woollama #26 gets wrong (below).
 
+One of the two routes, abridged — `tiiny-fast` is the same block with a
+different `virtual.default`, and `ttt` addresses both. The full pair is in
+[`woollama.md`](woollama.md#configuration):
+
 ```toml
 [inferencers.tiiny]
 base_url            = "http://api.tiiny/v1"
@@ -211,6 +220,16 @@ api_key_env         = "TIINY_API_KEY"
 parallel            = 1            # NON-NEGOTIABLE: concurrency wedges the chat model
 queue_max           = 8            # 503 + Retry-After instead of hanging
 queue_timeout       = 90           # cold load measured at 33s; the 30s default 503s on first use
+
+# EVERY chat model that could be resident. A list matching nothing resident
+# falls OPEN to the unfiltered resident set — see the fail-open trap below.
+models = [
+  "Qwen/Qwen3.6-35B-A3B-turbo",
+  "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+  "Qwen/Qwen3-30B-A3B-Instruct",
+  "Qwen/Qwen3-8B",
+  "default",
+]
 
   [inferencers.tiiny.virtual]
   default = "Qwen/Qwen3.6-35B-A3B-turbo"

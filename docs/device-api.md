@@ -82,6 +82,7 @@ The part the CLI mostly doesn't expose yet.
 | POST | `/api/v1/models/{id}/interrupt` | Cancel in-flight generation, keep it loaded. |
 | POST | `/api/v1/models/interrupt_all` | Same, fleet-wide. |
 | GET | `/api/v1/models/{id}/unload_candidate` | **What would be evicted** to make room. Useful before a load on a full device. |
+| GET | `/api/v1/models/npu/status` | NPU hardware and total memory — the budget `npu_usage` is spent against. Note the `models/` prefix: the shorter `/api/v1/npu/status` answers only on a direct `:8800` and 404s through the gateway. |
 
 **The device runs MULTIPLE models concurrently, bounded by NPU RAM** — not one
 at a time. Each loaded model is its own instance on its own port (embedding on
@@ -106,9 +107,13 @@ swap models**.
 
 #### The budget is a percentage, and file size does not predict it
 
-`GET /api/v1/npu/status` reports the hardware: an `LQ50-48GB`, ~47.9 GiB total,
-separate from the ~31 GB of system RAM. Residency is gated by summed
-`npu_usage`, and **disk size is not merely a weak proxy for it — it inverts**:
+`GET /api/v1/models/npu/status` reports the hardware: an `LQ50-48GB`, ~47.9 GiB
+total, separate from the ~31 GB of system RAM. **Take the path literally.** The
+shorter `/api/v1/npu/status` returns the same report but answers only on the
+device's own `:8800`; through the gateway it 404s. The proxied
+`/models/npu/status` works both ways, which is why `ttt top` and `ttt doctor`
+use it. Residency is gated by summed `npu_usage`, and **disk size is not merely
+a weak proxy for it — it inverts**:
 
 | model | disk | `npu_usage` |
 |---|---|---|
@@ -272,15 +277,17 @@ varies before building on it.
 
 ## 5. Behaviours to design around
 
-- **One model at a time**, `parallel = 1`. Concurrent load wedges the chat model
-  so that *every* request 504s, including trivial ones.
+- **One request at a time**, `parallel = 1`. Concurrent load wedges the chat
+  model so that *every* request 504s, including trivial ones. This is a limit on
+  in-flight requests, not on residency — several models run concurrently (§2).
 - **Single-session**: a second connecting client silently drops the first. Two
   clients connect/disconnect each other in a loop forever.
 - **Boots locked.** `/data` is LUKS2; until unlocked, docker won't start and the
   model API returns **502** with no cue that unlocking is the fix.
-- **404s are normal on this unit** for `/api/v1/npu/status`,
-  `/api/services`, and the upgrade endpoints. Don't read the high 4xx rate in
-  `sys/performance` as a connectivity signal.
+- **404s are normal on this unit** for `/api/v1/npu/status` *through the
+  gateway* — the proxied `/api/v1/models/npu/status` is the one that answers
+  either way — and for `/api/services` and the upgrade endpoints. Don't read the
+  high 4xx rate in `sys/performance` as a connectivity signal.
 - **`signal_strength` is not a health metric.** It reads 100 during a dead
   WiFi roam. Measure the path, not the metric.
 

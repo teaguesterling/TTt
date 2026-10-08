@@ -126,9 +126,14 @@ address=/tiiny/<bridge>
 
 **dnsmasq's `address=/domain/` is a suffix match at any depth**, so this one line
 covers `api.tiiny` *and* `auth.api.tiiny`. A **Caddy** wildcard is single-label —
-`*.tiiny` would miss the two-label names — which is why the Caddy snippet lists
-all 16 names explicitly. The two look alike and behave differently; this is easy
-to get wrong.
+`*.tiiny` would miss the two-label names — so a Caddy site block has to name all
+18 vhosts explicitly. The two look alike and behave differently; this is easy to
+get wrong.
+
+This repo does not ship the bridge host's Caddy config, but it does carry the
+authoritative name list: the `NAMES=` line in
+[`../bin/pick-device-ip.sh`](https://github.com/teaguesterling/TTt/blob/main/bin/pick-device-ip.sh),
+which writes the same 18 names into the pcsvr hosts file.
 
 Clients need their resolver pointed at the bridge host
 (`/etc/systemd/resolved.conf.d/lan.conf`, `DNS=<bridge>`).

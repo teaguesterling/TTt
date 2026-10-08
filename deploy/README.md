@@ -1,20 +1,29 @@
 # deploy
 
-Unit files for running TTt tooling as a service. Both are **user** units — no
-sudo — but they need `loginctl enable-linger <user>` to start without a login.
-Check before assuming it on a new host: `loginctl show-user $USER -p Linger`.
+Unit files for running TTt tooling as a service. Three units: two **user** ones
+and one **system** one.
 
-| unit | what it runs | where |
-|---|---|---|
-| `tiiny-device-watch.service` | the device/bridge watcher | an always-on host with the USB link (the bridge host) |
-| `woollamad.service` | the woollama router on `:47600` | wherever inference is routed from (e.g. the workstation) |
+| unit | scope | what it runs | where |
+|---|---|---|---|
+| `tiiny-device-watch.service` | user | the device/bridge watcher | an always-on host with the USB link (the bridge host) |
+| `woollamad.service` | user | the woollama router on `:47600` | wherever inference is routed from (e.g. the workstation) |
+| `tiiny-embedder-watchdog.service` | **system** | the wedged-embedder watchdog | on the device, or any host that can reach its management API |
 
-Install either with:
+The two user units install with no sudo, but they need `loginctl enable-linger
+<user>` to start without a login. Check before assuming it on a new host:
+`loginctl show-user $USER -p Linger`.
 
 ```bash
 install -Dm644 deploy/<unit> ~/.config/systemd/user/<unit>
 systemctl --user daemon-reload && systemctl --user enable --now <unit>
 ```
+
+**That recipe does not work for `tiiny-embedder-watchdog.service`.** It is a
+system unit — it sets `User=`, wants `multi-user.target`, and reads
+`EnvironmentFile=/etc/tiiny-embedder-watchdog.env` — so it goes in
+`/etc/systemd/system/` and needs the script and env file installed alongside it.
+The whole sequence is in
+[`../docs/embedder-watchdog.md`](../docs/embedder-watchdog.md#install-on-device).
 
 ## `woollamad.service` — the router
 
@@ -67,7 +76,7 @@ Tiiny" presents as a bare `fetch failed` for at least three unrelated causes:
 | up | up | healthy |
 | up | down | **the bridge broke**, not the device — dnsmasq, Caddy, or the USB link |
 | up | unresolved | **DNS** — the client won't resolve `api.tiiny` at all |
-| down | up | Caddy is answering but the device behind it isn't — check unlock (`tiiny-unlock.sh`) |
+| down | up | Caddy is answering but the device behind it isn't — check unlock (`ttt unlock`) |
 | down | down | device genuinely gone, or the USB cable |
 
 `DEVICE up + PATH down` is the row worth internalising. It is invisible from the

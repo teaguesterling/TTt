@@ -26,10 +26,24 @@ internal 8800, so it rides the bridge. This is why the tools no longer dial
 | `TIINY_HOST` | Override the `:80` vhost (default `api.tiiny`). |
 | `TIINY_MGMT` | Override the management base (default `http://p8800.api.tiiny/api/v1`). |
 
-**Token fallback.** With no `TIINY_AUTH_KEY`, tools read
-`~/.local/share/tiiny-pcsvr/auth_data/<serial>.json` — pcsvr's directory,
-which exists only on the host where pcsvr runs. On any other host, set
-`TIINY_AUTH_KEY` or the tool exits with a message saying exactly that.
+**Token fallback.** `ttt` looks in three places, in this order:
+
+1. `TIINY_AUTH_KEY`.
+2. `~/.local/share/tiiny-pcsvr/auth_data/<serial>.json` — pcsvr's directory,
+   which exists only on the host where pcsvr runs.
+3. `account.authKey` in `~/.tiiny/config.json` — the vendor CLI's own config,
+   written by `tiiny login`. This is why a host that has used the vendor CLI
+   needs no further setup.
+
+Find nothing in all three and the tool exits saying exactly that.
+
+**Only `ttt` reads the vendor config.** `tiiny-unlock.sh`,
+`tiiny-import-model.sh`, `woollamad-run.sh` (which wants `TIINY_API_KEY`),
+`tiiny-ask.py`, `tiiny-duckeye.py` and `tiiny-librarian.py` stop after the
+first two sources, so on a vendor-CLI-only host they need the key exported.
+Where `ttt` wraps one — `ttt unlock`, `ttt ask`, `ttt duckeye` — it hands the
+key and address it already resolved to the helper, so the wrapper works even
+though the helper alone would not.
 
 ---
 
@@ -52,9 +66,11 @@ ttt ocr    <image> [--engine tiiny|rapidocr] [--model ID] [--out F]  image → t
 ttt asr    <audio> [--model ID] [--out F]        speech → text (~6x real time)
 ttt say    "<text>" [--voice F1] [--lang L] [--play] [--out F]   text → speech
 ttt listen [--seconds N] [--out F]               microphone → text
+ttt music  "<description>" [--seconds N] [--full] [--play] [--out F]
 ttt rerank "<query>" <candidate> … | --file F    order candidates by relevance
 ttt prompt ["<text>"] [--template FILE]          ask the device; text in, text out
 ttt dialog ["<text>"] [--template FILE]          the same, in a zenity window
+ttt duckeye "<request>" [--path DIR] [--dry-run] [--answer]
 ttt load   <alias|ID>                            load a model (aliases below)
 ttt unload <alias|ID> | --all                    free NPU again
 ttt models [--all]                               what's loaded (--all = installed)
@@ -67,9 +83,10 @@ ttt unlock                                       unlock /data after a reboot
 ```
 
 **Model aliases.** `load`, `unload` and `--model` resolve names through
-`~/.config/ttt/models` (`alias = model id`), then through built-ins (`fast`,
-`smart`, `35b`, `small`, `coder`, `tts`, `asr`, `embed`), then pass anything
-else through as a literal id. See
+`~/.config/ttt/models` (`alias = model id`), then through the nine built-ins
+(`fast`/`instruct`, `smart`/`thinking`, `35b`, `small`, `coder`, `tts`/`voice`,
+`asr`/`speech`, `music`, `embed`), then pass anything else through as a literal
+id. See
 [`../deploy/ttt.models.example`](https://github.com/teaguesterling/TTt/blob/main/deploy/ttt.models.example). `load` and
 `unload` hand off to the vendor `tiiny` CLI when it is installed, and use the
 API when it isn't.
@@ -78,13 +95,16 @@ API when it isn't.
 service returns 503 until then — so `say` loads one on demand; it costs ~0% of
 the NPU and evicts nothing. Voices are `F1`–`F5` and `M1`–`M5` (the OpenAI-style
 `voice` names are rejected), and 18 languages are supported, `auto` by default.
-`listen` records from the default microphone and hands the file to `asr`.
+`listen` records from the default microphone for `--seconds N` (default **8**)
+and hands the file to `asr`.
 
 **`music` previews first, then resumes.** `ttt music "<description>"` renders a
-short piece from a text description; `--seconds N` sets its length and `--full`
-continues that same generation to roughly three times as long. Both write a WAV;
-`--play` plays it. Reckon on **6–9 seconds of render per second of audio** — a
-5 s preview takes about 80 s, and `--full` about three minutes.
+short piece from a text description; `--seconds N` sets its length (default
+**10**) and `--full` continues that same generation to roughly three times as
+long. Both write a WAV; `--play` plays it. Reckon on **8 seconds of render per
+second of audio**, which is the estimate `ttt music` prints for itself — so the
+default 10 s preview takes about 80 s, a 5 s one about 40 s, and `--full`
+roughly three times whichever you asked for.
 
 Three things about this API are worth knowing before you poke at it directly:
 
@@ -160,18 +180,30 @@ reasoning model is actually loaded. The device can hold several models at once
 (bounded by NPU RAM), but the chat route uses whichever chat model is resident —
 so `ttt load smart` first. The CLI warns rather than silently no-op'ing.
 
-**Host requirements:** `ask` and `do` need `squackit` / `lackpy` from a venv
-beside the script; `ocr --engine rapidocr` needs `rapidocr_onnxruntime`
-(`pip install`, CPU-only, no sudo — it prints the exact install line if missing);
-everything else needs only `python3` and `curl`. The interpreter search is
+**Host requirements.** The floor is `python3` and `curl`, and a plain
+`ttt ask "<question>"` needs nothing beyond it — the extras below belong to
+particular modes, mostly `--code` and `--path`. The interpreter search is
 venv-beside-script → venv-one-level-up → system `python3`.
+
+| command | also needs |
+|---|---|
+| `ask --code`, `do` | `squackit` / `lackpy` from a venv beside the script, plus the `fastmcp` package (`tiiny-ask.py` imports it at the top) |
+| `ask --librarian` | a `python3` with `duckdb`, and a `tiibrarian` checkout (`TIIBRARIAN_HOME`) |
+| `code`, `review`, `judge` | **a woollama router on `127.0.0.1:47600`** — the address is hardcoded, so these three do nothing without it. See [`woollama.md`](woollama.md). |
+| `asr` | `ffmpeg`, which converts the input to the raw PCM16 the device expects |
+| `listen` | a recorder — `parecord`, `pw-record` or `arecord` — and `ffmpeg`, since it hands the recording to `asr` |
+| `say --play`, `music --play` | a player: `paplay`, `pw-play`, `aplay` or `ffplay` |
+| `image --transparent`, `image --px` | Pillow, for the chroma-key and the pixel-art downscale |
+| `ocr --engine rapidocr` | `rapidocr_onnxruntime` (`pip install`, CPU-only, no sudo — it prints the exact install line if missing) |
 
 `ocr` has two backends. It is a *feeding* step: `ttt ocr shot.png | ttt ask "…"`.
 
 - **`--engine tiiny`** (default) — a vision model **on the device** (an
   `Image-Text-to-Text` model). More accurate on messy/handwritten text and can
   follow instructions, but it is a **chat model, so loading it evicts the resident
-  chat model** (the device serves one at a time) and it needs a device token.
+  chat model** (NPU memory, not a one-model limit — the device holds several
+  models at once, but a second chat model of that size does not fit beside
+  the first) and it needs a device token.
   Default model `Qwen/Qwen3.6-35B-A3B-turbo` (vision-enabled; MoE, 3B active →
   fast). Override per-call with `--model ID`. Not every vision-capable model
   serves images here — `google/gemma-4-26B-A4B-it` does not — so stay on the
@@ -282,8 +314,18 @@ python3 tests/test_duckeye_guards.py     # exits non-zero if a guard stops holdi
 `tests/test_duckeye_guards.py` exercises every refusal, both path escapes, the
 bash round-trip of each quoted form, and the fact that `-o` never creates its
 file. It needs `duckeye` on PATH and skips loudly without it; it never needs the
-device. It is the only test in this repo — there is no framework and nothing
-else to run.
+device.
+
+There are four tests in `tests/`, no framework and nothing to install — each is
+a `python3 tests/<file>` that exits non-zero on failure, and none of them need
+the device or a network:
+
+| test | what it pins |
+|---|---|
+| `test_duckeye_guards.py` | the `ttt duckeye` guards above — the model writes the command, so the command is checked before it runs |
+| `test_unreachable_device.py` | `ttt status` against a device that cannot be reached, which is the first thing a new user hits |
+| `test_vendor_config_fallback.py` | that `ttt` picks up the device address and key from the vendor CLI's own `~/.tiiny/config.json` |
+| `test_helper_env_passthrough.py` | that `ttt` hands the key and address it resolved to the helpers it launches |
 
 A no-match (`-Q`/`-S`/`-s` exit 1) is a result, not a failure — under
 `--answer` the model is told the extract was empty so it can say the selector
