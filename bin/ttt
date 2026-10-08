@@ -557,7 +557,14 @@ case "$cmd" in
     # through to the general path would answer the same question twice.
     if [ "$CODE" = 1 ] || [ "$PATH_SET" = 1 ]; then
       ROUTE="default"; [ "$SMART" = 1 ] && ROUTE="tiiny/Qwen3-Thinking"  # informational; device serves loaded model
-      TIINY_ROUTE="$ROUTE" "$PY" "$HERE/tiiny-ask.py" "$ASK_Q" --path "$PATH_ARG"
+      # Pass the RESOLVED key and address, as the librarian launch above does.
+      # ttt finds a key in three places (env, pcsvr auth_data, ~/.tiiny/config.json)
+      # and an address in two; tiiny-ask.py reads only the first two key sources and
+      # no vendor config at all. Launching it with TIINY_ROUTE alone meant a host set
+      # up the documented way -- vendor CLI, no pcsvr -- had a working `ttt status`
+      # and an `ttt ask --code` that exited "no device token".
+      TIINY_ROUTE="$ROUTE" TIINY_IP="$IP" TIINY_AUTH_KEY="$KEY" \
+        "$PY" "$HERE/tiiny-ask.py" "$ASK_Q" --path "$PATH_ARG"
       exit $?
     fi
     device_chat "$ASK_Q" "ask"
@@ -1479,7 +1486,10 @@ PYEOF
     if [ "$DRYRUN" = 1 ]; then DARGS+=(--dry-run); fi
     if [ "$ANSWER" = 1 ]; then DARGS+=(--answer); fi
     if [ "$ALLOWWHERE" = 1 ]; then DARGS+=(--allow-where); fi
-    TIINY_ROUTE="$DMODEL" TIINY_IP="$IP" "$PY" "$HERE/tiiny-duckeye.py" "$DQ" "${DARGS[@]}"
+    # TIINY_AUTH_KEY for the same reason as the ask --code launch above:
+    # tiiny-duckeye.py resolves a key from env or pcsvr only, never the vendor config.
+    TIINY_ROUTE="$DMODEL" TIINY_IP="$IP" TIINY_AUTH_KEY="$KEY" \
+      "$PY" "$HERE/tiiny-duckeye.py" "$DQ" "${DARGS[@]}"
     ;;
 
   prompt|dialog)
