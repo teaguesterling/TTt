@@ -18,11 +18,12 @@ TiinyOS ships Windows-only. Running it on Linux means two separate tricks:
 
 So the stack is half-native, half-Wine, and the two halves talk over loopback.
 
-## The five pieces
+## The six pieces
 
 | file | what it does |
 |---|---|
-| `build-native-linux.sh` | **builds the tree** from the Wine install — run this first |
+| `build-native-linux.sh` | **builds the first tree** from the Wine install — run this first |
+| `build-native-port.sh` | **builds each later release** from the vendor installer and the previous tree |
 | `tiiny-native.sh` | the orchestrator: `start` / `stop` / `restart` / `status` |
 | `run-pcsvr.sh` | pcsvr under patched Wine on `127.0.0.1:60000` |
 | `run-tiinyos-linux.sh` | launches the native Electron app; **lives inside the build tree** |
@@ -34,7 +35,7 @@ sequences this for you.
 
 ## What is NOT here, and why
 
-**The assembled Electron build tree** (`linux-native-build-0.9.6/`) — ~200 MB of
+**The assembled Electron build tree** (`linux-native-build-<ver>/`) — ~200 MB of
 binaries. It's built, not authored. `run-tiinyos-linux.sh` is the one file in
 that tree worth versioning, so it's kept here as the canonical copy and
 **installed into** the tree, which is also why it self-roots via
@@ -67,6 +68,43 @@ Three non-obvious things it handles, each of which cost hours by hand:
 
 Overridable: `ELECTRON_VER`, `SHARP_VER`, `COLOUR_VER`, `TIINY_NATIVE_BUILD`.
 
+## Building a new vendor release
+
+`build-native-port.sh` builds the next release from the vendor Windows
+installer and the previous tree. It does not need Wine or npm.
+
+```bash
+./build-native-port.sh --check-only      # ask the vendor endpoint for a newer version
+./build-native-port.sh                   # download the newest version, build, and verify
+./build-native-port.sh --exe tiinyos-1.0.3-windows-amd64.exe \
+    --from "$TIINY_HOME/linux-native-build-1.0.2" --caddy path/to/tiiny.caddy
+```
+
+The previous tree (`--from`) defaults to the newest
+`$TIINY_HOME/linux-native-build-*`. The result goes to
+`$TIINY_HOME/linux-native-build-<ver>/` (change it with `--out`). The script
+installs the tree only if all checks pass. If a check fails, the work files
+stay in `.work/`.
+
+Requirements: `7z`, `node`, `curl`, `bwrap`, and `asar` (on `PATH`, or through
+`npx --no-install asar`).
+
+The script stops, for a person to review the recipe, if:
+
+1. the Electron or sharp version differs from the previous tree,
+2. the previous tree differs from its vendor asar outside the three `@img` packages,
+3. the vendor `resources/` directory has an unknown entry, or
+4. a check of the packed asar fails.
+
+The sharp check runs vendor JS, so it runs in `bwrap` with no network and a
+tmpfs `HOME`. If `bwrap` does not work, the build stops (`--no-sandbox-check`
+removes the sandbox). The download host must be on the `DOWNLOAD_HOSTS`
+allowlist, and the script does not follow redirects.
+
+It does not test the GUI, because headless mode segfaults, and it does not
+start or stop TiinyOS. It prints the `tiiny-native.sh restart` command that
+adopts the new tree.
+
 ## Paths
 
 These default to a single checkout at `~/tiiny-tools`; override any of them to
@@ -75,7 +113,7 @@ match your own layout.
 | env | default | |
 |---|---|---|
 | `TIINY_HOME` | `~/tiiny-tools` | where `run-pcsvr.sh` and the build tree live |
-| `TIINY_NATIVE_BUILD` | `$TIINY_HOME/linux-native-build-0.9.6` | assembled Electron tree |
+| `TIINY_NATIVE_BUILD` | `$TIINY_HOME/linux-native-build-1.0.3` | assembled Electron tree |
 | `TIINY_TTT` | `~/tiiny-tools` | this checkout, for helper lookup |
 | `TIINY_AGENT_PROXY_PORT` | `60080` | agent-catalog proxy |
 | `TIINY_LINUX_APPS` | `opencode,Hermes Agent` | agents to unhide |
