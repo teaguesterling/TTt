@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Switch which Tiiny device TiinyOS targets.
+
+The app resolves auth.api.tiiny / api.tiiny / ... through one hosts file that
+maps them all to a single IP, so it talks to exactly one device at a time. This
+flips that target: it reads the device registry, finds the chosen unit's live
+address (by discovery name, verified by serial so a DHCP shuffle can't point it
+at the wrong box), repoints the hosts file + pcsvr-api.yaml, and restarts the app.
+
+  tiiny-device                       list devices and show the current target
+  tiiny-device <name>                switch to that device and restart the app
+  tiiny-device <name> --no-restart   repoint only (applies on next launch)
+
+Registry: ~/.config/tiiny/devices.toml  (add a [[device]] stanza per device)
+Shares the vhost list + hosts writer with resolve-device-ip.py (one source).
+"""
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+import urllib.request
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+CONFIG = os.path.expanduser("~/.config/tiiny/devices.toml")
+LAUNCHERS = ["/opt/tiinyos/current/tiiny-native.sh", os.path.join(HERE, "tiiny-native.sh")]
+
+# Share the vhost list + hosts writer with resolve-device-ip.py. Its CLI is
+# guarded under __main__, so importing it does not trigger discovery.
+_spec = importlib.util.spec_from_file_location(
+    "resolve_device_ip", os.path.join(HERE, "resolve-device-ip.py"))
+rdi = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(rdi)
+
+
+def load_devices():
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        sys.exit("tiiny-device needs Python 3.11+ (tomllib)")
+    if not os.path.exists(CONFIG):
+        sys.exit("no device registry at %s" % CONFIG)
+    with open(CONFIG, "rb") as f:
+        data = tomllib.load(f)
+    devs = {}
+    for d in data.get("device", []):
+        if "name" not in d:
+            sys.exit("a [[device]] stanza in %s has no name" % CONFIG)
+        devs[d["name"]] = d
+    if not devs:
+        sys.exit("no [[device]] stanzas in %s" % CONFIG)
+    return devs
+
+
+def probe_serial(ip, timeout=4):
+    """Unauthenticated device.json read -> serial, or None if unreachable."""
+    try:
+        with urllib.request.urlopen("http://%s:39218/device.json" % ip, timeout=timeout) as r:
+            return json.load(r).get("serial_number")
+    except Exception:
+        return None
+
+
+def current_target():
+    """The IP the hosts file currently points the *.tiiny vhosts at."""
+    try:
+        with open(rdi.HOSTS) as f:
+            for line in f:
+                if "api.tiiny" in line:
+                    return line.split()[0]
+    except OSError:
+        pass
+    return None
+
+
+def resolve_ip(dev):
+    """Live IP for a device: discovery by name, else the pinned ip; serial-verified."""
+    name, serial = dev["name"], dev.get("serial")
+    found = {nm: ip for ip, nm in rdi.discover_all()}
+    ip = found.get(name) or dev.get("ip")
+    if not ip:
+        sys.exit("device %r not found by discovery and no 'ip' pinned in the registry" % name)
+    if serial:
+        got = probe_serial(ip)
+        if got and got != serial:
+            sys.exit("REFUSING: %s at %s reports serial %s, registry expects %s "
+                     "(wrong unit / stale address)" % (name, ip, got, serial))
+    return ip
+
+
+def cmd_list(devs):
+    cur = current_target()
+    found = {nm: ip for ip, nm in rdi.discover_all()}
+    print("current target: %s" % (cur or "(none)"))
+    for name, d in devs.items():
+        ip = found.get(name) or d.get("ip", "?")
+        state = "up" if name in found else "offline"
+        mark = "  <- current" if ip != "?" and ip == cur else ""
+        print("  %-12s %-15s %-8s serial=%s%s" % (name, ip, state, d.get("serial", "?"), mark))
+
+
+def cmd_switch(devs, name, restart):
+    if name not in devs:
+        sys.exit("unknown device %r; registry has: %s" % (name, ", ".join(devs)))
+    ip = resolve_ip(devs[name])
+    rdi.write_target(ip)
+    print("TiinyOS target -> %s (%s)" % (name, ip))
+    if not restart:
+        print("(--no-restart: applies on next app launch)")
+        return
+    launcher = next((p for p in LAUNCHERS if os.path.exists(p)), None)
+    if not launcher:
+        print("no launcher found (%s); restart the app yourself" % " / ".join(LAUNCHERS))
+        return
+    print("restarting app: %s restart" % launcher)
+    subprocess.run([launcher, "restart"], check=False)
+
+
+def main():
+    devs = load_devices()
+    rest = [a for a in sys.argv[1:] if not a.startswith("-")]
+    no_restart = "--no-restart" in sys.argv[1:]
+    if not rest:
+        cmd_list(devs)
+    else:
+        cmd_switch(devs, rest[0], restart=not no_restart)
+
+
+if __name__ == "__main__":
+    main()

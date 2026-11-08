@@ -1,0 +1,17 @@
+# Example TiinyOS device registry for `tiiny-device`.
+# Copy to ~/.config/tiiny/devices.toml and fill in your own units.
+# Add a device = add a [[device]] stanza.
+#   name   : the device's discovery name (what it reports over UDP; also the
+#            key you type: `tiiny-device <name>`)
+#   serial : the physical unit's serial — verified against :39218/device.json
+#            before switching, so a DHCP reassignment can't target the wrong box
+#   ip     : optional pinned address, used only when UDP discovery misses the unit
+
+[[device]]
+name   = "device-a"
+serial = "TNYM00000000000000A"
+
+[[device]]
+name   = "device-b"
+serial = "TNYM00000000000000B"
+# ip   = "192.168.4.144"   # uncomment to pin when discovery is unreliable

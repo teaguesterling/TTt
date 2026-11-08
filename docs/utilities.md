@@ -400,6 +400,35 @@ input.
 DNS. `discover.py` is a standalone prober. Same note as above: these are
 discovery tools, so literal addresses are the point.
 
+`resolve-device-ip.py` is importable: `write_target(ip)` and `discover_all()`
+are module-level, and its CLI is guarded under `__main__`, so importing it does
+not trigger discovery. `tiiny-device` (below) reuses both.
+
+## `tiiny-device` — switch which device the desktop app targets
+
+The app maps every `*.api.tiiny` vhost to **one** IP through its hosts file, so
+it talks to one device at a time. `tiiny-device` flips that target by name:
+
+```
+tiiny-device                       list devices + the current target
+tiiny-device <name>                switch to that device and restart the app
+tiiny-device <name> --no-restart   repoint only (applies on next launch)
+```
+
+It reads a registry at `~/.config/tiiny/devices.toml` (template:
+[`examples/devices.toml`](../examples/devices.toml)), finds the named unit's
+live address by UDP discovery, and **verifies the serial** against
+`:39218/device.json` before writing — so a DHCP reassignment can't point you at
+the wrong box. It shares the vhost list and `write_target()` with
+`resolve-device-ip.py` (one source of truth).
+
+The switch survives the restart only while pcsvr is already up: on a *cold*
+pcsvr start, `run-pcsvr.sh` re-runs the first-responder `resolve-device-ip.py`,
+which can repoint to whichever unit answers first (see the
+`resolver-first-responder-mistargets-app` note). The restart step is the one
+part that touches the desktop app — on a headless bridge host that has never run
+it, `--no-restart` repoints the files and the restart no-ops.
+
 ---
 
 ## What deliberately did **not** move here
