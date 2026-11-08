@@ -135,6 +135,17 @@ authoritative name list: the `NAMES=` line in
 [`../bin/pick-device-ip.sh`](https://github.com/teaguesterling/TTt/blob/main/bin/pick-device-ip.sh),
 which writes the same 18 names into the pcsvr hosts file.
 
+## Choosing which device
+
+With more than one Tiiny on the LAN, the pcsvr hosts file — and the app's
+`--host-resolver-rules`, built from the same IP — decide which unit every
+`*.tiiny` name reaches. [`tiiny-device`](utilities.md) flips that target by
+name, verifying the chosen unit's serial before it repoints, so a DHCP
+reassignment can't send you to the wrong box. `tiiny-device` lists the
+registered units and the current target; `tiiny-device <name>` repoints and
+restarts the app. The switch survives the restart while pcsvr is up; a *cold*
+pcsvr start re-runs the first-responder discovery and can override it.
+
 Clients need their resolver pointed at the bridge host
 (`/etc/systemd/resolved.conf.d/lan.conf`, `DNS=<bridge>`).
 

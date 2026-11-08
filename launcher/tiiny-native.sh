@@ -19,7 +19,7 @@ set -uo pipefail
 # back to TIINY_HOME only if this script is being run outside its own checkout.
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HERE="${TIINY_HOME:-$HOME/tiiny-tools}"
-NB="${TIINY_NATIVE_BUILD:-$HERE/linux-native-build-1.0.1}"
+NB="${TIINY_NATIVE_BUILD:-$HERE/linux-native-build-1.0.3}"
 NATIVE="$NB/run-tiinyos-linux.sh"
 
 # Prefer a sibling copy, fall back to TIINY_HOME.

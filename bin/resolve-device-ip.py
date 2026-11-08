@@ -101,22 +101,62 @@ def discover():
         return None, None
 
 
-ip, name = discover()
-if not ip:
-    print("no Tiiny device replied to UDP discovery", file=sys.stderr)
-    sys.exit(1)
+def write_target(ip):
+    """Point the app's hosts file and pcsvr-api.yaml at one device IP.
 
-os.makedirs(os.path.dirname(HOSTS) or ".", exist_ok=True)
-with open(HOSTS, "w") as f:
-    f.write("127.0.0.1 localhost\n")
-    f.write("%s %s\n" % (ip, " ".join(NAMES)))
+    Writes every *.tiiny vhost to this single IP -- the app resolves them all
+    through NSS_WRAPPER_HOSTS, so this is what selects the device the app talks
+    to. Shared with tiiny-device so both use the same vhost list."""
+    os.makedirs(os.path.dirname(HOSTS) or ".", exist_ok=True)
+    with open(HOSTS, "w") as f:
+        f.write("127.0.0.1 localhost\n")
+        f.write("%s %s\n" % (ip, " ".join(NAMES)))
+    if os.path.exists(CFG):
+        with open(CFG) as f:
+            cfg = f.read()
+        new = re.sub(r'(\n\s*DefaultIPv4:\s*)\S+', r'\g<1>' + ip, cfg, count=1)
+        if new != cfg:
+            with open(CFG, "w") as f:
+                f.write(new)
 
-if os.path.exists(CFG):
-    with open(CFG) as f:
-        cfg = f.read()
-    new = re.sub(r'(\n\s*DefaultIPv4:\s*)\S+', r'\g<1>' + ip, cfg, count=1)
-    if new != cfg:
-        with open(CFG, "w") as f:
-            f.write(new)
 
-print("found %s at %s -> %s" % (name, ip, HOSTS))
+def discover_all(window=2.5):
+    """Collect every device that answers UDP discovery: list of (ip, name).
+
+    Unlike discover() (first responder only), this reads the whole window, so a
+    caller can pick a specific device by name/serial instead of the first to
+    reply."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    s.settimeout(window)
+    for t in broadcast_targets():
+        try:
+            s.sendto(TOKEN, (t, PORT))
+        except OSError:
+            pass
+    seen = {}
+    try:
+        while True:
+            data, addr = s.recvfrom(65535)
+            try:
+                d = json.loads(data)
+            except ValueError:
+                continue
+            if d.get("discovery_token") == TOKEN.decode():
+                seen.setdefault(addr[0], d.get("device_name", "?"))
+    except socket.timeout:
+        pass
+    return [(ip, nm) for ip, nm in seen.items()]
+
+
+def main():
+    ip, name = discover()
+    if not ip:
+        print("no Tiiny device replied to UDP discovery", file=sys.stderr)
+        sys.exit(1)
+    write_target(ip)
+    print("found %s at %s -> %s" % (name, ip, HOSTS))
+
+
+if __name__ == "__main__":
+    main()
