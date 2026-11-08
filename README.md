@@ -125,7 +125,7 @@ pipes.
 
 ```
 bin/       ttt and friends: the CLI, one-shot prompts, HuggingFace import,
-           unlock after reboot, device discovery, a reachability watcher
+           unlock after reboot, device discovery and switching, a reachability watcher
 launcher/  running the desktop app on Linux: build the native Electron tree,
            start pcsvr under Wine, unhide Linux agents in the store
 wine/      the two Wine patches the PC Service cannot run without
