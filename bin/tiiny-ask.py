@@ -5,7 +5,7 @@ answer a question, so codebase exploration is offloaded off my context.
 
   ./tiiny-ask.py "which functions call ensure_loaded, and where is it defined?"
   ./tiiny-ask.py --path ~/code/some-project "outline the inference dispatch flow"
-  TIINY_ROUTE=tiiny/default ./tiiny-ask.py "..."   # thinking model for hard ones
+  TIINY_ROUTE=pygmy/default ./tiiny-ask.py "..."   # thinking model for hard ones
 
 Design notes baked in from evaluation:
 - squackit's MCP schemas DON'T document the selector DSL, so it's in the system

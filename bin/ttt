@@ -556,7 +556,7 @@ case "$cmd" in
     # `exit $?` rather than `exec`: nothing needs to follow it, and falling
     # through to the general path would answer the same question twice.
     if [ "$CODE" = 1 ] || [ "$PATH_SET" = 1 ]; then
-      ROUTE="default"; [ "$SMART" = 1 ] && ROUTE="tiiny/Qwen3-Thinking"  # informational; device serves loaded model
+      ROUTE="default"; [ "$SMART" = 1 ] && ROUTE="pygmy/Qwen3-Thinking"  # informational; device serves loaded model
       # Pass the RESOLVED key and address, as the librarian launch above does.
       # ttt finds a key in three places (env, pcsvr auth_data, ~/.tiiny/config.json)
       # and an address in two; tiiny-ask.py reads only the first two key sources and
@@ -591,8 +591,8 @@ PYEOF
   code)
     CODE_PROMPT="$(payload_text 'ttt code "<prompt>" | FILE | -   [--smart]')"
     ARGS=("$CODE_PROMPT")
-    ROUTE="tiiny-fast/default"; MAXTOK=4096
-    [ "$SMART" = 1 ] && { ROUTE="tiiny/default"; MAXTOK=16384; }
+    ROUTE="pygmy-fast/default"; MAXTOK=4096
+    [ "$SMART" = 1 ] && { ROUTE="pygmy/default"; MAXTOK=16384; }
     PROMPT="${ARGS[0]}" ROUTE="$ROUTE" MAXTOK="$MAXTOK" "$PY" - <<'PYEOF'
 import json,os,sys,urllib.request
 prompt=os.environ["PROMPT"]
@@ -627,12 +627,12 @@ PYEOF
 
   review)
     F="$(payload_file 'ttt review FILE | -   [--smart]')"
-    ROUTE="tiiny-fast/default"; MAXTOK=2048
+    ROUTE="pygmy-fast/default"; MAXTOK=2048
     # --smart review is unreliable on this device: too small a budget truncates
     # (thinking eats it), too large and the Thinking model reasons until the
     # gateway times out (500/504). 8192 is the least-bad middle — completes on
     # small files, degrades on large ones. Fast is the reliable default.
-    [ "$SMART" = 1 ] && { ROUTE="tiiny/default"; MAXTOK=8192; }
+    [ "$SMART" = 1 ] && { ROUTE="pygmy/default"; MAXTOK=8192; }
     echo "reviewing $(basename "$F") on ${ROUTE##*/} route… (streaming live; --smart can take a few min)" >&2
     FILE="$F" ROUTE="$ROUTE" MAXTOK="$MAXTOK" "$PY" - <<'PYEOF'
 import json,os,sys,urllib.request
@@ -683,7 +683,7 @@ try:
             if ch.get("finish_reason"): finish=ch["finish_reason"]
 except Exception as e:
     if not parts:
-        smart=os.environ["ROUTE"]=="tiiny/default"
+        smart=os.environ["ROUTE"]=="pygmy/default"
         hint=("the Thinking model likely timed out — use fast review or a smaller section") \
              if smart else "retry (first call after a model swap can 500)"
         raise SystemExit(f"ttt review: device error ({type(e).__name__}: {e}); {hint}")
@@ -700,8 +700,8 @@ PYEOF
     [ ${#ARGS[@]} -lt 2 ] && { echo "usage: ttt judge <rubric_file> <candidate_file> [--smart]" >&2; exit 1; }
     RUB="${ARGS[0]}"; CAND="${ARGS[1]}"
     { [ -f "$RUB" ] && [ -f "$CAND" ]; } || { echo "need two existing files: <rubric> <candidate>" >&2; exit 1; }
-    ROUTE="tiiny-fast/default"; MAXTOK=2048
-    [ "$SMART" = 1 ] && { ROUTE="tiiny/default"; MAXTOK=16384; }
+    ROUTE="pygmy-fast/default"; MAXTOK=2048
+    [ "$SMART" = 1 ] && { ROUTE="pygmy/default"; MAXTOK=16384; }
     RUBRIC="$(cat "$RUB")" CANDIDATE="$(cat "$CAND")" ROUTE="$ROUTE" MAXTOK="$MAXTOK" "$PY" - <<'PYEOF'
 import json,os,sys,urllib.request
 sysmsg=("You are a STRICT grader. You get a numbered rubric of expected items and "

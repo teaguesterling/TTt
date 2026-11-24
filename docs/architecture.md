@@ -207,12 +207,12 @@ Anything caching residency must therefore treat its own view as a **hint that
 the device corrects**, load-balancer style — never as a ledger. This is exactly
 what woollama #26 gets wrong (below).
 
-One of the two routes, abridged — `tiiny-fast` is the same block with a
+One of the two routes, abridged — `device-fast` is the same block with a
 different `virtual.default`, and `ttt` addresses both. The full pair is in
 [`woollama.md`](woollama.md#configuration):
 
 ```toml
-[inferencers.tiiny]
+[inferencers.device]
 base_url            = "http://api.tiiny/v1"
 management_url      = "http://api.tiiny"
 management_protocol = "device"     # /api/v1/models/{running,start,stop}
@@ -231,7 +231,7 @@ models = [
   "default",
 ]
 
-  [inferencers.tiiny.virtual]
+  [inferencers.device.virtual]
   default = "Qwen/Qwen3.6-35B-A3B-turbo"
 ```
 
@@ -257,7 +257,7 @@ actually evicted all three models, 18.2 GiB.
 its environment; without it every request 400s and the residency query 401s.
 
 The two chat routes now hold **different** `virtual.default` values again —
-`tiiny` → turbo, `tiiny-fast` → Instruct. Verified at migration: alternating
+`device` → turbo, `device-fast` → Instruct. Verified at migration: alternating
 them ran 0.68–0.86s with device residency unchanged. The virtual entry is now
 only consulted when nothing eligible is resident, so it means "what to load on
 a cold device", which is what it should have meant all along.

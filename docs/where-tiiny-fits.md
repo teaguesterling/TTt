@@ -164,7 +164,7 @@ not.
 
 **Design it against the contention profile:**
 
-1. **Route through woollamad and do not name a model.** Ask for `tiiny/default`
+1. **Route through woollamad and do not name a model.** Ask for `device/default`
    and take whatever is resident. A background job demanding a specific model
    *evicts* whatever a human is using — the job becomes the aggressor. Be
    residency-opportunistic, not model-prescriptive.
