@@ -61,7 +61,7 @@ cargo install woollama-server        # ≥ 0.13.0; current release 0.16.x
 `inferencers.toml` — two chat routes, because `ttt` addresses both by name:
 
 ```toml
-[inferencers.tiiny]                             # the --smart route
+[inferencers.pygmy]                             # the --smart route
 base_url            = "http://api.tiiny/v1"     # or http://<device-ip>:8800/v1
 management_url      = "http://api.tiiny"
 management_protocol = "device"   # /api/v1/models/{running,start,stop}
@@ -79,19 +79,19 @@ models = [
   "default",
 ]
 
-  [inferencers.tiiny.virtual]
+  [inferencers.pygmy.virtual]
   default = "Qwen/Qwen3.6-35B-A3B-turbo"   # what to load on a cold device
 
-[inferencers.tiiny-fast]                   # the default route
+[inferencers.pygmy-fast]                   # the default route
 # every key above repeated verbatim, `models` included; only the default differs
 
-  [inferencers.tiiny-fast.virtual]
+  [inferencers.pygmy-fast.virtual]
   default = "Qwen/Qwen3-30B-A3B-Instruct"  # fast, thinking off
 ```
 
 **Both names are required, not a preference.** `ttt code`, `ttt review` and
-`ttt judge` post to `tiiny-fast/default`, and to `tiiny/default` under
-`--smart`. A config defining only `tiiny` leaves plain `ttt code` with nothing
+`ttt judge` post to `pygmy-fast/default`, and to `pygmy/default` under
+`--smart`. A config defining only `pygmy` leaves plain `ttt code` with nothing
 to call — woollamad answers, but for a route that isn't there.
 
 Four settings worth understanding, each learned the hard way:
